@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.8)
 project(Souper)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(CMAKE_MACOSX_RPATH NEW)
 
@@ -8,17 +9,52 @@ if(NOT CMAKE_BUILD_TYPE)
       "Choose the type of build, options are: Debug Release RelWithDebInfo MinSizeRel." FORCE)
 endif()
 
-if (NOT LLVM_BUILD_TYPE)
-  set(LLVM_BUILD_TYPE ${CMAKE_BUILD_TYPE})
-endif()
-set(LLVM_CONFIG_EXECUTABLE ${CMAKE_SOURCE_DIR}/third_party/llvm-${LLVM_BUILD_TYPE}-install/bin/llvm-config)
-if(NOT EXISTS ${LLVM_CONFIG_EXECUTABLE})
-  message(FATAL_ERROR "llvm-config could not be found!")
+
+# ============================================================================
+# LLVM
+# ============================================================================
+
+# Use system llvm-config by default.
+# Can be overridden with:
+#   -DLLVM_CONFIG_EXECUTABLE=/path/to/llvm-config
+
+if(NOT LLVM_CONFIG_EXECUTABLE)
+  find_program(LLVM_CONFIG_EXECUTABLE
+    NAMES llvm-config
+    REQUIRED
+  )
 endif()
 
-find_path(ZSTD_LIBRARY_DIR
-          NAMES libzstd.a libzstd.dylib libzstd.so libzstd.so.1
-          HINTS /usr/local/lib /opt/homebrew/lib /usr/lib/x86_64-linux-gnu)
+if(NOT EXISTS "${LLVM_CONFIG_EXECUTABLE}")
+  message(FATAL_ERROR
+    "llvm-config could not be found: ${LLVM_CONFIG_EXECUTABLE}"
+  )
+endif()
+
+message(STATUS "LLVM llvm-config: ${LLVM_CONFIG_EXECUTABLE}")
+
+
+# ============================================================================
+# ZSTD
+# ============================================================================
+
+find_library(ZSTD_LIBRARY
+  NAMES zstd
+  REQUIRED
+)
+
+get_filename_component(
+  ZSTD_LIBRARY_DIR
+  "${ZSTD_LIBRARY}"
+  DIRECTORY
+)
+
+message(STATUS "zstd library: ${ZSTD_LIBRARY}")
+
+
+# ============================================================================
+# LLVM configuration
+# ============================================================================
 
 execute_process(
   COMMAND ${LLVM_CONFIG_EXECUTABLE} --includedir
@@ -32,7 +68,10 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-set(LLVM_CXXFLAGS "${LLVM_CXXFLAGS} -fno-exceptions -fno-rtti -Wno-deprecated-enum-enum-conversion")
+set(
+  LLVM_CXXFLAGS
+  "${LLVM_CXXFLAGS} -fno-exceptions -fno-rtti -Wno-deprecated-enum-enum-conversion"
+)
 
 execute_process(
   COMMAND ${LLVM_CONFIG_EXECUTABLE} --libs
@@ -45,8 +84,9 @@ execute_process(
   OUTPUT_VARIABLE LLVM_SYSTEM_LIBS
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+
 set(LLVM_LIBS "${LLVM_LIBS} ${LLVM_SYSTEM_LIBS}")
-string(STRIP ${LLVM_LIBS} LLVM_LIBS)
+string(STRIP "${LLVM_LIBS}" LLVM_LIBS)
 
 execute_process(
   COMMAND ${LLVM_CONFIG_EXECUTABLE} --ldflags
@@ -55,7 +95,9 @@ execute_process(
 )
 
 set(PASS_LDFLAGS "${LLVM_LDFLAGS}")
-set(LLVM_LDFLAGS "${LLVM_LDFLAGS} -L ${ZSTD_LIBRARY_DIR}")
+
+# Keep zstd available to the LLVM link step.
+set(LLVM_LDFLAGS "${LLVM_LDFLAGS} -L${ZSTD_LIBRARY_DIR}")
 
 execute_process(
   COMMAND ${LLVM_CONFIG_EXECUTABLE} --bindir
@@ -69,14 +111,186 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-set(ALIVE_SRCDIR "${CMAKE_SOURCE_DIR}/third_party/alive2")
-set(ALIVE_BUILDDIR "${CMAKE_SOURCE_DIR}/third_party/alive2-build")
-include_directories("${CMAKE_SOURCE_DIR}/third_party")
-include_directories("${ALIVE_SRCDIR}")
+message(STATUS "LLVM include dir: ${LLVM_INCLUDEDIR}")
+message(STATUS "LLVM binary dir:  ${LLVM_BINDIR}")
+message(STATUS "LLVM object dir:  ${LLVM_BUILD}")
+
+
+# ============================================================================
+# Alive2
+# ============================================================================
+
+# Alive2 is not assumed to be installed by build_deps.sh anymore.
+#
+# Configure with:
+#
+#   -DALIVE2_ROOT=/path/to/alive2
+#
+# Expected layout:
+#
+#   ${ALIVE2_ROOT}/
+#       ... headers ...
+#       build/
+#           libir.a
+#           libsmt.a
+#           libtools.a
+#           libutil.a
+#
+# If your Alive2 build uses a different layout, change ALIVE2_BUILDDIR below.
+
+set(ALIVE2_ROOT "" CACHE PATH
+  "Root directory of the Alive2 source/build installation"
+)
+
+if(NOT ALIVE2_ROOT)
+  message(FATAL_ERROR
+    "Alive2 is required. "
+    "Configure with -DALIVE2_ROOT=/path/to/alive2"
+  )
+endif()
+
+set(ALIVE_SRCDIR "${ALIVE2_ROOT}")
+set(ALIVE_BUILDDIR "${ALIVE2_ROOT}/build")
+
+message(STATUS "Alive2 root:    ${ALIVE_SRCDIR}")
+message(STATUS "Alive2 build:   ${ALIVE_BUILDDIR}")
+
+
+find_library(ALIVE_IR
+  NAMES ir
+  PATHS "${ALIVE_BUILDDIR}"
+  NO_DEFAULT_PATH
+  REQUIRED
+)
+
+find_library(ALIVE_SMT
+  NAMES smt
+  PATHS "${ALIVE_BUILDDIR}"
+  NO_DEFAULT_PATH
+  REQUIRED
+)
+
+find_library(ALIVE_TOOLS
+  NAMES tools
+  PATHS "${ALIVE_BUILDDIR}"
+  NO_DEFAULT_PATH
+  REQUIRED
+)
+
+find_library(ALIVE_UTIL
+  NAMES util
+  PATHS "${ALIVE_BUILDDIR}"
+  NO_DEFAULT_PATH
+  REQUIRED
+)
+
+message(STATUS "Alive2 IR:      ${ALIVE_IR}")
+message(STATUS "Alive2 SMT:     ${ALIVE_SMT}")
+message(STATUS "Alive2 TOOLS:   ${ALIVE_TOOLS}")
+message(STATUS "Alive2 UTIL:    ${ALIVE_UTIL}")
+
+set(ALIVE_LIBRARY
+  ${ALIVE_IR}
+  ${ALIVE_SMT}
+  ${ALIVE_TOOLS}
+  ${ALIVE_UTIL}
+)
+
+
+# ============================================================================
+# General include paths
+# ============================================================================
+
+get_filename_component(ALIVE_PARENTDIR "${ALIVE_SRCDIR}" DIRECTORY)
+
+include_directories(
+  "${CMAKE_SOURCE_DIR}/third_party"
+  "${ALIVE_SRCDIR}"
+  "${ALIVE_PARENTDIR}"
+)
+
+
+# ============================================================================
+# hiredis
+# ============================================================================
+
+find_path(HIREDIS_INCLUDE_DIR
+  NAMES hiredis.h
+  PATH_SUFFIXES hiredis
+  REQUIRED
+)
+
+find_library(HIREDIS_LIBRARY
+  NAMES hiredis
+  REQUIRED
+)
+
+message(STATUS "hiredis include: ${HIREDIS_INCLUDE_DIR}")
+message(STATUS "hiredis library: ${HIREDIS_LIBRARY}")
+
+include_directories("${HIREDIS_INCLUDE_DIR}")
+
+
+# ============================================================================
+# Z3
+# ============================================================================
+
+find_program(Z3
+  NAMES z3
+  REQUIRED
+)
+
+find_path(Z3_INCLUDE_DIR
+  NAMES z3++.h z3.h
+  REQUIRED
+)
+
+find_library(Z3_LIBRARY
+  NAMES z3
+  REQUIRED
+)
+
+message(STATUS "Z3 executable: ${Z3}")
+message(STATUS "Z3 include:    ${Z3_INCLUDE_DIR}")
+message(STATUS "Z3 library:    ${Z3_LIBRARY}")
+
+include_directories("${Z3_INCLUDE_DIR}")
+
+
+# ============================================================================
+# GoogleTest
+# ============================================================================
 
 set(GTEST_CXXFLAGS "-DGTEST_HAS_RTTI=0")
-set(GTEST_INCLUDEDIR "${LLVM_BINDIR}/../include/llvm-gtest/")
-set(GTEST_LIBS "-lllvm_gtest_main -lllvm_gtest")
+
+find_path(GTEST_INCLUDEDIR
+  NAMES gtest/gtest.h
+  REQUIRED
+)
+
+find_library(GTEST_LIBRARY
+  NAMES gtest
+  REQUIRED
+)
+
+find_library(GTEST_MAIN_LIBRARY
+  NAMES gtest_main
+  REQUIRED
+)
+
+set(GTEST_LIBS
+  "${GTEST_MAIN_LIBRARY}"
+  "${GTEST_LIBRARY}"
+)
+
+message(STATUS "GTest include:  ${GTEST_INCLUDEDIR}")
+message(STATUS "GTest library:  ${GTEST_LIBRARY}")
+message(STATUS "GTest main:     ${GTEST_MAIN_LIBRARY}")
+
+
+# ============================================================================
+# C++ configuration
+# ============================================================================
 
 set(LLVM_CXXFLAGS "${LLVM_CXXFLAGS} -std=c++20")
 
@@ -86,84 +300,69 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   set(PASS_LDFLAGS "-Wl,-undefined,dynamic_lookup")
 endif()
 
-include_directories(include third_party/klee/include)
-include_directories(include "${CMAKE_BINARY_DIR}/include")
+
+# ============================================================================
+# KLEE
+# ============================================================================
+
+set(KLEE_ROOT
+  "${CMAKE_SOURCE_DIR}/third_party/klee"
+  CACHE PATH
+  "KLEE source tree used by Souper"
+)
+
+if(NOT EXISTS "${KLEE_ROOT}/include/klee/Expr.h")
+  message(FATAL_ERROR
+    "KLEE headers not found.\n"
+    "Expected: ${KLEE_ROOT}/include/klee/Expr.h"
+  )
+endif()
+
+if(NOT EXISTS "${KLEE_ROOT}/lib/Expr/ArrayCache.cpp")
+  message(FATAL_ERROR
+    "KLEE Expr sources not found.\n"
+    "Expected: ${KLEE_ROOT}/lib/Expr/ArrayCache.cpp"
+  )
+endif()
+
+message(STATUS "KLEE root: ${KLEE_ROOT}")
+
+set(KLEE_INCLUDE_DIR
+  "${KLEE_ROOT}/include"
+)
 
 set(KLEE_EXPR_FILES
-  third_party/klee/lib/Expr/ArrayCache.cpp
-  third_party/klee/lib/Expr/Constraints.cpp
-  third_party/klee/lib/Expr/ExprBuilder.cpp
-  third_party/klee/lib/Expr/Expr.cpp
-  third_party/klee/lib/Expr/ExprEvaluator.cpp
-  third_party/klee/lib/Expr/ExprPPrinter.cpp
-  third_party/klee/lib/Expr/ExprSMTLIBPrinter.cpp
-  third_party/klee/lib/Expr/ExprUtil.cpp
-  third_party/klee/lib/Expr/ExprVisitor.cpp
-  third_party/klee/lib/Expr/Lexer.cpp
-  third_party/klee/lib/Expr/Parser.cpp
-  third_party/klee/lib/Expr/Updates.cpp
+  "${KLEE_ROOT}/lib/Expr/ArrayCache.cpp"
+  "${KLEE_ROOT}/lib/Expr/Constraints.cpp"
+  "${KLEE_ROOT}/lib/Expr/ExprBuilder.cpp"
+  "${KLEE_ROOT}/lib/Expr/Expr.cpp"
+  "${KLEE_ROOT}/lib/Expr/ExprEvaluator.cpp"
+  "${KLEE_ROOT}/lib/Expr/ExprPPrinter.cpp"
+  "${KLEE_ROOT}/lib/Expr/ExprSMTLIBPrinter.cpp"
+  "${KLEE_ROOT}/lib/Expr/ExprUtil.cpp"
+  "${KLEE_ROOT}/lib/Expr/ExprVisitor.cpp"
+  "${KLEE_ROOT}/lib/Expr/Lexer.cpp"
+  "${KLEE_ROOT}/lib/Expr/Parser.cpp"
+  "${KLEE_ROOT}/lib/Expr/Updates.cpp"
 )
 
-add_library(kleeExpr STATIC
-  ${KLEE_EXPR_FILES}
+add_library(kleeExpr STATIC ${KLEE_EXPR_FILES})
+
+target_include_directories(kleeExpr
+  PUBLIC
+    "${KLEE_ROOT}/include"
 )
 
-find_path(HIREDIS_INCLUDE_DIR
-  NAMES
-  hiredis/hiredis.h
-  PATHS
-  third_party/hiredis-install/include
-  NO_DEFAULT_PATH)
+include_directories(
+  include
+  "${KLEE_INCLUDE_DIR}"
+  "${CMAKE_BINARY_DIR}/include"
+)
 
-include_directories(${HIREDIS_INCLUDE_DIR}/hiredis)
 
-find_library(HIREDIS_LIBRARY
-  NAMES
-  hiredis
-  PATHS
-  third_party/hiredis-install/lib
-  NO_DEFAULT_PATH)
-
-find_library(ALIVE_IR ir PATHS "${ALIVE_BUILDDIR}" NO_DEFAULT_PATH)
-if (ALIVE_IR)
-  message(STATUS "Alive2 IR")
-else()
-  message(SEND_ERROR "Alive2 libir.a not found")
-endif()
-
-find_library(ALIVE_SMT smt PATHS "${ALIVE_BUILDDIR}" NO_DEFAULT_PATH)
-if (ALIVE_SMT)
-  message(STATUS "Alive2 SMT")
-else()
-  message(SEND_ERROR "Alive2 libsmt.a not found")
-endif()
-
-find_library(ALIVE_TOOLS tools PATHS "${ALIVE_BUILDDIR}" NO_DEFAULT_PATH)
-if (ALIVE_TOOLS)
-  message(STATUS "Alive2 TOOLS")
-else()
-  message(SEND_ERROR "Alive2 libtools.a not found")
-endif()
-
-find_library(ALIVE_UTIL util PATHS "${ALIVE_BUILDDIR}" NO_DEFAULT_PATH)
-if (ALIVE_UTIL)
-  message(STATUS "Alive2 UTIL")
-else()
-  message(SEND_ERROR "Alive2 libutil.a not found")
-endif()
-
-set(Z3 "${CMAKE_SOURCE_DIR}/third_party/z3-install/bin/z3")
-set(Z3_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/z3-install/include")
-include_directories(${Z3_INCLUDE_DIR})
-
-find_library(Z3_LIBRARY z3 PATHS "${CMAKE_SOURCE_DIR}/third_party/z3-install/lib" NO_DEFAULT_PATH)
-if (Z3_LIBRARY)
-  message(STATUS "Z3 shared lib: ${Z3_LIBRARY}")
-else()
-  message(SEND_ERROR "Z3 shared lib not found")
-endif()
-
-set(ALIVE_LIBRARY ${ALIVE_IR} ${ALIVE_SMT} ${ALIVE_TOOLS} ${ALIVE_UTIL} ${Z3_LIBRARY})
+# ============================================================================
+# Souper Extractor
+# ============================================================================
 
 set(SOUPER_EXTRACTOR_FILES
   lib/Extractor/Candidates.cpp
@@ -179,6 +378,11 @@ add_library(souperExtractor STATIC
   ${SOUPER_EXTRACTOR_FILES}
 )
 
+
+# ============================================================================
+# Souper KVStore
+# ============================================================================
+
 set(SOUPER_KVSTORE_FILES
   lib/KVStore/KVStore.cpp
   include/souper/KVStore/KVStore.h
@@ -187,6 +391,11 @@ set(SOUPER_KVSTORE_FILES
 add_library(souperKVStore STATIC
   ${SOUPER_KVSTORE_FILES}
 )
+
+
+# ============================================================================
+# Souper Infer
+# ============================================================================
 
 set(SOUPER_INFER_FILES
   lib/Infer/InstSynthesis.cpp
@@ -210,6 +419,11 @@ add_library(souperInfer STATIC
   ${SOUPER_INFER_FILES}
 )
 
+
+# ============================================================================
+# Souper Inst
+# ============================================================================
+
 set(SOUPER_INST_FILES
   lib/Inst/Inst.cpp
   include/souper/Inst/Inst.h
@@ -220,6 +434,11 @@ add_library(souperInst STATIC
   ${SOUPER_INST_FILES}
 )
 
+
+# ============================================================================
+# Souper Parser
+# ============================================================================
+
 set(SOUPER_PARSER_FILES
   lib/Parser/Parser.cpp
   include/souper/Parser/Parser.h
@@ -229,6 +448,11 @@ add_library(souperParser STATIC
   ${SOUPER_PARSER_FILES}
 )
 
+
+# ============================================================================
+# Souper SMTLIB2
+# ============================================================================
+
 set(SOUPER_SMTLIB2_FILES
   lib/SMTLIB2/Solver.cpp
   include/souper/SMTLIB2/Solver.h
@@ -237,6 +461,11 @@ set(SOUPER_SMTLIB2_FILES
 add_library(souperSMTLIB2 STATIC
   ${SOUPER_SMTLIB2_FILES}
 )
+
+
+# ============================================================================
+# Souper Tool
+# ============================================================================
 
 set(SOUPER_TOOL_FILES
   lib/Tool/CandidateMapUtils.cpp
@@ -248,6 +477,11 @@ add_library(souperTool STATIC
   ${SOUPER_TOOL_FILES}
 )
 
+
+# ============================================================================
+# Souper Codegen
+# ============================================================================
+
 set(SOUPER_CODEGEN_FILES
   lib/Codegen/Codegen.cpp
   include/souper/Codegen/Codegen.h
@@ -257,6 +491,11 @@ add_library(souperCodegen STATIC
   ${SOUPER_CODEGEN_FILES}
 )
 
+
+# ============================================================================
+# Combined Souper sources
+# ============================================================================
+
 set(SOUPER_SOURCES
   ${SOUPER_EXTRACTOR_FILES}
   ${SOUPER_INST_FILES}
@@ -265,21 +504,54 @@ set(SOUPER_SOURCES
   ${SOUPER_SMTLIB2_FILES}
   ${SOUPER_TOOL_FILES}
   ${SOUPER_INFER_FILES}
-  ${SOUPER_CODEGEN_FILES})
+  ${SOUPER_CODEGEN_FILES}
+)
+
+
+# ============================================================================
+# LLVM passes
+# ============================================================================
 
 add_library(souperPass SHARED
-  ${KLEE_EXPR_FILES}
   ${SOUPER_SOURCES}
   lib/Pass/Pass.cpp
+)
+
+target_link_libraries(souperPass
+  PRIVATE
+    ${LLVM_LIBS}
+    ${Z3_LIBRARY}
+    ${HIREDIS_LIBRARY}
+    ${ALIVE_LIBRARY}
+    ${ZSTD_LIBRARY}
+    kleeExpr
 )
 
 add_library(souperPassProfileAll SHARED
-  ${KLEE_EXPR_FILES}
   ${SOUPER_SOURCES}
   lib/Pass/Pass.cpp
 )
 
-target_compile_definitions(souperPassProfileAll PRIVATE DYNAMIC_PROFILE_ALL=1)
+target_compile_definitions(
+  souperPassProfileAll
+  PRIVATE
+  DYNAMIC_PROFILE_ALL=1
+)
+
+target_link_libraries(souperPassProfileAll
+  PRIVATE
+    ${LLVM_LIBS}
+    ${Z3_LIBRARY}
+    ${HIREDIS_LIBRARY}
+    ${ALIVE_LIBRARY}
+    ${ZSTD_LIBRARY}
+    kleeExpr
+)
+
+
+# ============================================================================
+# Executables
+# ============================================================================
 
 add_executable(souper
   tools/souper.cpp
@@ -313,33 +585,48 @@ add_executable(souper2llvm
   tools/souper2llvm.cpp
 )
 
-add_executable(extractor_tests
-  unittests/Extractor/ExtractorTests.cpp
-)
 
-add_executable(inst_tests
-  unittests/Inst/InstTests.cpp
-)
+# ============================================================================
+# Unit tests
+# ============================================================================
 
-add_executable(parser_tests
-  unittests/Parser/ParserTests.cpp
-)
+# add_executable(extractor_tests
+#   unittests/Extractor/ExtractorTests.cpp
+# )
+#
+# add_executable(inst_tests
+#   unittests/Inst/InstTests.cpp
+# )
+#
+# add_executable(parser_tests
+#   unittests/Parser/ParserTests.cpp
+# )
+#
+# add_executable(codegen_tests
+#   unittests/Codegen/CodegenTests.cpp
+# )
+#
+# add_executable(interpreter_tests
+#   unittests/Interpreter/InterpreterInfra.cpp
+#   unittests/Interpreter/InterpreterTests.cpp
+# )
+#
+# add_executable(bulk_tests
+#   unittests/Interpreter/InterpreterInfra.cpp
+#   utils/gen-xfer-funcs/BulkTests.cpp
+#   utils/gen-xfer-funcs/Verification.cpp
+# )
+#
+# target_include_directories(
+#   bulk_tests
+#   PUBLIC
+#   "${CMAKE_SOURCE_DIR}/unittests/Interpreter"
+# )
 
-add_executable(codegen_tests
-  unittests/Codegen/CodegenTests.cpp
-)
 
-add_executable(interpreter_tests
-  unittests/Interpreter/InterpreterInfra.cpp
-  unittests/Interpreter/InterpreterTests.cpp)
-
-set(LLVM_LDFLAGS "${LLVM_LDFLAGS}")
-
-add_executable(bulk_tests
-  unittests/Interpreter/InterpreterInfra.cpp
-  utils/gen-xfer-funcs/BulkTests.cpp
-  utils/gen-xfer-funcs/Verification.cpp)
-target_include_directories(bulk_tests PUBLIC "${CMAKE_SOURCE_DIR}/unittests/Interpreter")
+# ============================================================================
+# Configure generated test/helper files
+# ============================================================================
 
 configure_file(
   ${CMAKE_SOURCE_DIR}/utils/gen-xfer-funcs/run_n.pl.in
@@ -371,53 +658,303 @@ configure_file(
   COPYONLY
 )
 
-foreach(target souper internal-solver-test lexer-test parser-test souper-check count-insts
-               souper2llvm souper-interpret
-               souperExtractor souperInfer souperInst souperKVStore souperParser
-               souperSMTLIB2 souperTool souperPass souperPassProfileAll kleeExpr
-               souperCodegen)
-  set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${LLVM_CXXFLAGS}")
-  target_include_directories(${target} PRIVATE "${LLVM_INCLUDEDIR}")
+
+# ============================================================================
+# Compiler flags / include directories
+# ============================================================================
+
+foreach(target
+    souper
+    internal-solver-test
+    lexer-test
+    parser-test
+    souper-check
+    count-insts
+    souper2llvm
+    souper-interpret
+    souperExtractor
+    souperInfer
+    souperInst
+    souperKVStore
+    souperParser
+    souperSMTLIB2
+    souperTool
+    souperPass
+    souperPassProfileAll
+    kleeExpr
+    souperCodegen
+)
+  set_target_properties(
+    ${target}
+    PROPERTIES
+    COMPILE_FLAGS "${LLVM_CXXFLAGS}"
+  )
+
+  target_include_directories(
+    ${target}
+    PRIVATE
+    "${LLVM_INCLUDEDIR}"
+  )
 endforeach()
-foreach(target extractor_tests inst_tests parser_tests interpreter_tests bulk_tests codegen_tests)
-  set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${GTEST_CXXFLAGS} ${LLVM_CXXFLAGS}")
-  target_include_directories(${target} PRIVATE "${LLVM_INCLUDEDIR}" "${GTEST_INCLUDEDIR}")
-endforeach()
 
-# static
-target_link_libraries(kleeExpr ${LLVM_LIBS} ${LLVM_LDFLAGS})
-target_link_libraries(souperExtractor souperParser souperKVStore souperInfer souperInst kleeExpr souperCodegen)
-target_link_libraries(souperInfer souperExtractor ${LLVM_LIBS} ${LLVM_LDFLAGS} ${Z3_LIBRARY})
-target_link_libraries(souperInst ${LLVM_LIBS} ${LLVM_LDFLAGS})
-target_link_libraries(souperKVStore ${HIREDIS_LIBRARY} ${LLVM_LIBS} ${LLVM_LDFLAGS})
-target_link_libraries(souperParser souperInst ${LLVM_LIBS} ${LLVM_LDFLAGS} ${ALIVE_LIBRARY})
-target_link_libraries(souperSMTLIB2 ${LLVM_LIBS} ${LLVM_LDFLAGS})
-target_link_libraries(souperTool souperExtractor souperSMTLIB2)
-target_link_libraries(souperCodegen ${LLVM_LIBS} ${LLVM_LDFLAGS})
 
-# dynamic
-target_link_libraries(souperCodegen ${PASS_LDFLAGS})
-target_link_libraries(souperPass ${PASS_LDFLAGS} ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} ${Z3_LIBRARY})
-target_link_libraries(souperPassProfileAll ${PASS_LDFLAGS} ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} ${Z3_LIBRARY})
+# foreach(target
+#     extractor_tests
+#     inst_tests
+#     parser_tests
+#     interpreter_tests
+#     bulk_tests
+#     codegen_tests
+# )
+#   set_target_properties(
+#     ${target}
+#     PROPERTIES
+#     COMPILE_FLAGS "${GTEST_CXXFLAGS} ${LLVM_CXXFLAGS}"
+#   )
+#
+#   target_include_directories(
+#     ${target}
+#     PRIVATE
+#     "${LLVM_INCLUDEDIR}"
+#     "${GTEST_INCLUDEDIR}"
+#   )
+# endforeach()
 
-# executables
-target_link_libraries(souper souperExtractor souperKVStore souperParser souperSMTLIB2 souperTool kleeExpr ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} ${Z3_LIBRARY})
-target_link_libraries(internal-solver-test souperSMTLIB2)
-target_link_libraries(lexer-test souperParser)
-target_link_libraries(parser-test souperParser)
-target_link_libraries(souper-check souperTool souperExtractor souperKVStore souperSMTLIB2 souperParser ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} ${Z3_LIBRARY})
-target_link_libraries(souper-interpret souperTool souperExtractor souperKVStore souperSMTLIB2 souperParser ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} ${Z3_LIBRARY})
-target_link_libraries(count-insts souperParser)
-target_link_libraries(souper2llvm souperParser souperCodegen)
-target_link_libraries(extractor_tests souperExtractor souperParser ${GTEST_LIBS} ${ALIVE_LIBRARY})
-target_link_libraries(inst_tests souperInfer souperPass souperInst souperExtractor ${GTEST_LIBS} ${ALIVE_LIBRARY})
-target_link_libraries(parser_tests souperParser ${GTEST_LIBS} ${ALIVE_LIBRARY})
-target_link_libraries(codegen_tests souperCodegen souperInst ${GTEST_LIBS} ${ALIVE_LIBRARY})
-target_link_libraries(interpreter_tests souperInfer souperInst ${GTEST_LIBS} ${ALIVE_LIBRARY})
-target_link_libraries(bulk_tests souperInfer souperInst ${GTEST_LIBS} ${ALIVE_LIBRARY} ${Z3_LIBRARY})
 
-set(TEST_SYNTHESIS "ON" CACHE STRING "Enable additional, computationally intensive synthesis tests")
-set(TEST_LONG_DURATION_SYNTHESIS "" CACHE STRING "Enable long duration (> 10 min) synthesis tests")
+# ============================================================================
+# Static libraries
+# ============================================================================
+
+target_link_libraries(
+  kleeExpr
+  ${LLVM_LIBS}
+  ${LLVM_LDFLAGS}
+)
+
+target_link_libraries(
+  souperExtractor
+  souperParser
+  souperKVStore
+  souperInfer
+  souperInst
+  kleeExpr
+  souperCodegen
+)
+
+target_link_libraries(
+  souperInfer
+  souperExtractor
+  ${LLVM_LIBS}
+  ${LLVM_LDFLAGS}
+  ${Z3_LIBRARY}
+)
+
+target_link_libraries(
+  souperInst
+  ${LLVM_LIBS}
+  ${LLVM_LDFLAGS}
+)
+
+target_link_libraries(
+  souperKVStore
+  ${HIREDIS_LIBRARY}
+  ${LLVM_LIBS}
+  ${LLVM_LDFLAGS}
+)
+
+target_link_libraries(
+  souperParser
+  souperInst
+  ${LLVM_LIBS}
+  ${LLVM_LDFLAGS}
+  ${ALIVE_LIBRARY}
+)
+
+target_link_libraries(
+  souperSMTLIB2
+  ${LLVM_LIBS}
+  ${LLVM_LDFLAGS}
+)
+
+target_link_libraries(
+  souperTool
+  souperExtractor
+  souperSMTLIB2
+)
+
+target_link_libraries(
+  souperCodegen
+  ${LLVM_LIBS}
+  ${LLVM_LDFLAGS}
+)
+
+
+# ============================================================================
+# Dynamic libraries
+# ============================================================================
+
+target_link_libraries(
+  souperCodegen
+  ${PASS_LDFLAGS}
+)
+
+# target_link_libraries(
+#   souperPass
+#   ${PASS_LDFLAGS}
+#   ${HIREDIS_LIBRARY}
+#   ${ALIVE_LIBRARY}
+#   ${Z3_LIBRARY}
+# )
+#
+# target_link_libraries(
+#   souperPassProfileAll
+#   ${PASS_LDFLAGS}
+#   ${HIREDIS_LIBRARY}
+#   ${ALIVE_LIBRARY}
+#   ${Z3_LIBRARY}
+# )
+
+
+# ============================================================================
+# Executables
+# ============================================================================
+
+target_link_libraries(
+  souper
+  souperExtractor
+  souperKVStore
+  souperParser
+  souperSMTLIB2
+  souperTool
+  kleeExpr
+  ${HIREDIS_LIBRARY}
+  ${ALIVE_LIBRARY}
+  ${Z3_LIBRARY}
+)
+
+target_link_libraries(
+  internal-solver-test
+  souperSMTLIB2
+)
+
+target_link_libraries(
+  lexer-test
+  souperParser
+)
+
+target_link_libraries(
+  parser-test
+  souperParser
+)
+
+target_link_libraries(
+  souper-check
+  souperTool
+  souperExtractor
+  souperKVStore
+  souperSMTLIB2
+  souperParser
+  ${HIREDIS_LIBRARY}
+  ${ALIVE_LIBRARY}
+  ${Z3_LIBRARY}
+)
+
+target_link_libraries(
+  souper-interpret
+  souperTool
+  souperExtractor
+  souperKVStore
+  souperSMTLIB2
+  souperParser
+  ${HIREDIS_LIBRARY}
+  ${ALIVE_LIBRARY}
+  ${Z3_LIBRARY}
+)
+
+target_link_libraries(
+  count-insts
+  souperParser
+)
+
+target_link_libraries(
+  souper2llvm
+  souperParser
+  souperCodegen
+)
+
+
+# ============================================================================
+# Unit test linking
+# ============================================================================
+
+# target_link_libraries(
+#   extractor_tests
+#   souperExtractor
+#   souperParser
+#   ${GTEST_LIBS}
+#   ${ALIVE_LIBRARY}
+# )
+#
+# target_link_libraries(
+#   inst_tests
+#   souperInfer
+#   souperPass
+#   souperInst
+#   souperExtractor
+#   ${GTEST_LIBS}
+#   ${ALIVE_LIBRARY}
+# )
+#
+# target_link_libraries(
+#   parser_tests
+#   souperParser
+#   ${GTEST_LIBS}
+#   ${ALIVE_LIBRARY}
+# )
+#
+# target_link_libraries(
+#   codegen_tests
+#   souperCodegen
+#   souperInst
+#   ${GTEST_LIBS}
+#   ${ALIVE_LIBRARY}
+# )
+#
+# target_link_libraries(
+#   interpreter_tests
+#   souperInfer
+#   souperInst
+#   ${GTEST_LIBS}
+#   ${ALIVE_LIBRARY}
+# )
+#
+# target_link_libraries(
+#   bulk_tests
+#   souperInfer
+#   souperInst
+#   ${GTEST_LIBS}
+#   ${ALIVE_LIBRARY}
+#   ${Z3_LIBRARY}
+# )
+
+
+# ============================================================================
+# Tests
+# ============================================================================
+
+set(
+  TEST_SYNTHESIS
+  "ON"
+  CACHE STRING
+  "Enable additional, computationally intensive synthesis tests"
+)
+
+set(
+  TEST_LONG_DURATION_SYNTHESIS
+  ""
+  CACHE STRING
+  "Enable long duration (> 10 min) synthesis tests"
+)
 
 configure_file(
   ${CMAKE_SOURCE_DIR}/test/lit.site.cfg.in
@@ -434,32 +971,154 @@ configure_file(
   ${CMAKE_BINARY_DIR}/souper-check-gdb.py
 )
 
-add_custom_target(check
-  COMMAND ${CMAKE_BINARY_DIR}/run_lit
-  DEPENDS extractor_tests inst_tests parser-test parser_tests profileRuntime souper souper-check souper-interpret souperPass souper2llvm souperPassProfileAll count-insts interpreter_tests bulk_tests codegen_tests
-  USES_TERMINAL)
 
-# we want assertions even in release mode!
-string(REPLACE "-DNDEBUG" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+# ============================================================================
+# Profiling runtime
+# ============================================================================
 
 add_library(profileRuntime STATIC
-  runtime/souperPassProfile.c)
+  runtime/souperPassProfile.c
+)
 
-set(SOUPER_PASS ${CMAKE_BINARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}souperPass${CMAKE_SHARED_LIBRARY_SUFFIX})
-set(SOUPER_PASS_PROFILE_ALL ${CMAKE_BINARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}souperPassProfileAll${CMAKE_SHARED_LIBRARY_SUFFIX})
-set(PROFILE_LIBRARY ${CMAKE_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}profileRuntime${CMAKE_STATIC_LIBRARY_SUFFIX})
-configure_file(${CMAKE_SOURCE_DIR}/utils/compare_pruning_output.in ${CMAKE_BINARY_DIR}/compare_pruning_output @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/utils/reduce.in ${CMAKE_BINARY_DIR}/reduce @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/utils/cache_dump.in ${CMAKE_BINARY_DIR}/cache_dump @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/utils/cache_dfa.in ${CMAKE_BINARY_DIR}/cache_dfa @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/utils/cache_import.in ${CMAKE_BINARY_DIR}/cache_import @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/utils/cache_infer.in ${CMAKE_BINARY_DIR}/cache_infer @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/utils/py_souper2llvm.in ${CMAKE_BINARY_DIR}/py_souper2llvm @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/include/souper/Tool/GetSolver.h.in ${CMAKE_BINARY_DIR}/include/souper/Tool/GetSolver.h @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/include/souper/KVStore/KVSocket.h.in ${CMAKE_BINARY_DIR}/include/souper/KVStore/KVSocket.h @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/utils/redis-unix-socket.conf.in ${CMAKE_BINARY_DIR}/redis-unix-socket.conf @ONLY)
 
-configure_file(${CMAKE_SOURCE_DIR}/utils/sclang.in ${CMAKE_BINARY_DIR}/sclang @ONLY)
-configure_file(${CMAKE_SOURCE_DIR}/utils/sclang.in ${CMAKE_BINARY_DIR}/sclang++ @ONLY)
+# ============================================================================
+# Check target
+# ============================================================================
+
+add_custom_target(check
+  COMMAND ${CMAKE_BINARY_DIR}/run_lit
+  DEPENDS
+    # extractor_tests
+    # inst_tests
+    # parser-test
+    # parser_tests
+    profileRuntime
+    souper
+    souper-check
+    souper-interpret
+    souperPass
+    souper2llvm
+    souperPassProfileAll
+    count-insts
+    # interpreter_tests
+    # bulk_tests
+    # codegen_tests
+  USES_TERMINAL
+)
+
+
+# ============================================================================
+# Assertions
+# ============================================================================
+
+# We want assertions even in Release mode.
+string(
+  REPLACE
+  "-DNDEBUG"
+  ""
+  CMAKE_CXX_FLAGS_RELEASE
+  "${CMAKE_CXX_FLAGS_RELEASE}"
+)
+
+
+# ============================================================================
+# Generated helper scripts/files
+# ============================================================================
+
+set(
+  SOUPER_PASS
+  ${CMAKE_BINARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}souperPass${CMAKE_SHARED_LIBRARY_SUFFIX}
+)
+
+set(
+  SOUPER_PASS_PROFILE_ALL
+  ${CMAKE_BINARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}souperPassProfileAll${CMAKE_SHARED_LIBRARY_SUFFIX}
+)
+
+set(
+  PROFILE_LIBRARY
+  ${CMAKE_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}profileRuntime${CMAKE_STATIC_LIBRARY_SUFFIX}
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/compare_pruning_output.in
+  ${CMAKE_BINARY_DIR}/compare_pruning_output
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/reduce.in
+  ${CMAKE_BINARY_DIR}/reduce
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/cache_dump.in
+  ${CMAKE_BINARY_DIR}/cache_dump
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/cache_dfa.in
+  ${CMAKE_BINARY_DIR}/cache_dfa
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/cache_import.in
+  ${CMAKE_BINARY_DIR}/cache_import
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/cache_infer.in
+  ${CMAKE_BINARY_DIR}/cache_infer
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/py_souper2llvm.in
+  ${CMAKE_BINARY_DIR}/py_souper2llvm
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/include/souper/Tool/GetSolver.h.in
+  ${CMAKE_BINARY_DIR}/include/souper/Tool/GetSolver.h
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/include/souper/KVStore/KVSocket.h.in
+  ${CMAKE_BINARY_DIR}/include/souper/KVStore/KVSocket.h
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/redis-unix-socket.conf.in
+  ${CMAKE_BINARY_DIR}/redis-unix-socket.conf
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/sclang.in
+  ${CMAKE_BINARY_DIR}/sclang
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/utils/sclang.in
+  ${CMAKE_BINARY_DIR}/sclang++
+  @ONLY
+)
+
+
+# ============================================================================
+# Documentation
+# ============================================================================
 
 add_subdirectory(docs)
+
+# Strip LLVM's -fno-exceptions and enforce -fexceptions for Z3
+string(REPLACE "-fno-exceptions" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")

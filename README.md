@@ -16,22 +16,23 @@ library from your package manager or from Homebrew.
 
 # Building Souper
 
+The process has been updated for the fork, since `build_deps` breaks.
+
 1. Download and build dependencies:
 ```
-$ ./build_deps.sh $buildtype $extra_cmake_flags
+$ ./get_deps.sh
 ```
-   $buildtype is optional; it defaults to Release and may be set to any LLVM
-   build type.
-   $extra_cmake_flags is optional. It is passed to CMake.
-
 2. Run CMake from a build directory:
 ```
-$ mkdir /path/to/souper-build
-$ cd /path/to/souper-build
-$ cmake -DCMAKE_BUILD_TYPE=$buildtype /path/to/souper
+rm -rf build
+
+cmake -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DALIVE2_ROOT=<path-to-alive2> \ # requires
+  -DZ3_EXECUTABLE=/usr/bin/z3 \ # optional
+  -DZ3_INCLUDE_DIR=/usr/include \ #optional
+  -DZ3_LIBRARY=/usr/lib/libz3.so # optional
 ```
-   Again, the build type is optional and defaults to Release. In any case it
-   must match the build type used when compiling the dependencies.
 
 3. Run 'make' from the build directory.
 

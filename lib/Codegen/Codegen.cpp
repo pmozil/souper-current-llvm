@@ -118,19 +118,19 @@ llvm::Value *Codegen::getValue(Inst *I) {
     case Inst::Trunc:
       return Builder.CreateTrunc(V0, T);
     case Inst::CtPop: {
-      Function *F = Intrinsic::getDeclaration(M, Intrinsic::ctpop, T);
+      Function *F = Intrinsic::getOrInsertDeclaration(M, Intrinsic::ctpop, T);
       return Builder.CreateCall(F, V0);
     }
     case Inst::BSwap: {
-      Function *F = Intrinsic::getDeclaration(M, Intrinsic::bswap, T);
+      Function *F = Intrinsic::getOrInsertDeclaration(M, Intrinsic::bswap, T);
       return Builder.CreateCall(F, V0);
     }
     case Inst::BitReverse: {
-      Function *F = Intrinsic::getDeclaration(M, Intrinsic::bitreverse, T);
+      Function *F = Intrinsic::getOrInsertDeclaration(M, Intrinsic::bitreverse, T);
       return Builder.CreateCall(F, V0);
     }
     case Inst::Cttz: {
-      Function *F = Intrinsic::getDeclaration(M, Intrinsic::cttz, T);
+      Function *F = Intrinsic::getOrInsertDeclaration(M, Intrinsic::cttz, T);
       // According to LLVM LangRef, the second argument of cttz i1
       // <is_zero_undef> must be a constant and is a flag to indicate whether
       // the intrinsic should ensure that a zero as the first argument produces
@@ -140,7 +140,7 @@ llvm::Value *Codegen::getValue(Inst *I) {
     }
     case Inst::Ctlz: {
       // Ditto
-      Function *F = Intrinsic::getDeclaration(M, Intrinsic::ctlz, T);
+      Function *F = Intrinsic::getOrInsertDeclaration(M, Intrinsic::ctlz, T);
       return Builder.CreateCall(
           F, {V0, ConstantInt::get(V0->getContext(), APInt(1, 0))});
     }
@@ -270,17 +270,17 @@ llvm::Value *Codegen::getValue(Inst *I) {
         report_fatal_error("Unexpected overflow inst");
       }();
       T = Type::getIntNTy(Context, Ops[0]->orderedOps()[0]->Width);
-      Function *F = Intrinsic::getDeclaration(M, ID, T);
+      Function *F = Intrinsic::getOrInsertDeclaration(M, ID, T);
       return Builder.CreateCall(F, {V0, V1});
     }
     case Inst::SAddSat:
-      return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::sadd_sat, T), {V0, V1});
+      return Builder.CreateCall(Intrinsic::getOrInsertDeclaration(M, Intrinsic::sadd_sat, T), {V0, V1});
     case Inst::UAddSat:
-      return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::uadd_sat, T), {V0, V1});
+      return Builder.CreateCall(Intrinsic::getOrInsertDeclaration(M, Intrinsic::uadd_sat, T), {V0, V1});
     case Inst::SSubSat:
-      return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::ssub_sat, T), {V0, V1});
+      return Builder.CreateCall(Intrinsic::getOrInsertDeclaration(M, Intrinsic::ssub_sat, T), {V0, V1});
     case Inst::USubSat:
-      return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::usub_sat, T), {V0, V1});
+      return Builder.CreateCall(Intrinsic::getOrInsertDeclaration(M, Intrinsic::usub_sat, T), {V0, V1});
     default:
       break;
     }
@@ -297,7 +297,7 @@ llvm::Value *Codegen::getValue(Inst *I) {
     case Inst::FShl:
     case Inst::FShr: {
       Intrinsic::ID ID = I->K == Inst::FShl ? Intrinsic::fshl : Intrinsic::fshr;
-      Function *F = Intrinsic::getDeclaration(M, ID, T);
+      Function *F = Intrinsic::getOrInsertDeclaration(M, ID, T);
       return Builder.CreateCall(F, {V0, V1, V2});
     }
     default:

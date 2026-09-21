@@ -28,7 +28,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
 #include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/PassPlugin.h"
+#include "llvm/Plugins/PassPlugin.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/raw_ostream.h"
@@ -128,9 +128,9 @@ public:
     Function *RegisterFunc = M->getFunction("_souper_profile_register");
     if (!RegisterFunc) {
       Type *RegisterArgs[] = {
-        PointerType::get(Type::getInt8Ty(C), 0),
-        PointerType::get(Type::getInt8Ty(C), 0),
-        PointerType::get(Type::getInt64Ty(C), 0),
+        PointerType::get(C, 0),
+        PointerType::get(C, 0),
+        PointerType::get(C, 0),
       };
       FunctionType *RegisterType = FunctionType::get(Type::getVoidTy(C),
                                                      RegisterArgs, false);
@@ -143,7 +143,7 @@ public:
     Constant *ReplVar = new GlobalVariable(*M, Repl->getType(), true,
         GlobalValue::PrivateLinkage, Repl, "");
     Constant *ReplPtr = ConstantExpr::getPointerCast(ReplVar,
-        PointerType::get(Type::getInt8Ty(C), 0));
+        PointerType::get(C, 0));
 
     Constant *Field = ConstantDataArray::getString(C, "dprofile " + Loc.str(),
                                                    true);
@@ -151,7 +151,7 @@ public:
                                             GlobalValue::PrivateLinkage, Field,
                                             "");
     Constant *FieldPtr = ConstantExpr::getPointerCast(FieldVar,
-        PointerType::get(Type::getInt8Ty(C), 0));
+        PointerType::get(C, 0));
 
     Constant *CntVar = new GlobalVariable(*M, Type::getInt64Ty(C), false,
                                           GlobalValue::PrivateLinkage,
@@ -178,7 +178,7 @@ public:
     new AtomicRMWInst(AtomicRMWInst::Add, CntVar,
                       ConstantInt::get(C, APInt(64, 1)),
                       A, AtomicOrdering::Monotonic,
-                      SyncScope::System, Cand.Origin);
+                      SyncScope::System, Cand.Origin->getIterator());
   }
 
   Value *getValue(Inst *I, Instruction *ReplacedInst,
@@ -202,7 +202,7 @@ public:
     if (DebugLevel > 1) {
       errs() << "\n";
       errs() << "; entering Souper's runOnFunction() for " << FunctionName << "()\n\n";
-      F.getParent()->dump();
+      F.getParent()->print(llvm::errs(), nullptr);
       errs() << "\n";
     }
 
@@ -332,7 +332,7 @@ public:
         if (DebugLevel > 2) {
           if (DebugLevel > 4) {
             errs() << "\nModule before replacement:\n";
-            F.getParent()->dump();
+            F.getParent()->print(llvm::errs(), nullptr);
           } else {
             errs() << "\nFunction before replacement:\n";
             F.print(errs());
@@ -375,7 +375,7 @@ public:
       if (DebugLevel > 2) {
         if (DebugLevel > 4) {
           errs() << "\nModule after replacement:\n";
-          F.getParent()->dump();
+          F.getParent()->print(llvm::errs(), nullptr);
         } else {
           errs() << "\nFunction after replacement:\n\n";
           F.print(errs());

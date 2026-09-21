@@ -12,5 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#define LLVM_VERSION_MAJOR 18
+#undef LLVM_VERSION_MAJOR
+#define LLVM_VERSION_MAJOR 22
 #define LLVM_VERSION_MINOR 1
