@@ -40,6 +40,7 @@ struct Token {
     Eq,
     Int,
     UntypedInt,
+    FPBits,
     KnownBits,
     OpenParen,
     CloseParen,
@@ -54,6 +55,7 @@ struct Token {
   StringRef Name;
   unsigned Width;
   std::string PatternString;
+  bool IsFloat = false;
 
   StringRef str() const {
     return StringRef(Pos, Len);
@@ -131,14 +133,25 @@ FoundChar:
         return Token{Token::Error, Begin, 0, APInt()};
       }
       const char *NameEnd = Begin;
+      bool IsFloat = false;
       if (Begin != End && *Begin == ':') {
         ++Begin;
-        if (Begin == End || *Begin != 'i') {
-          ErrStr = "expected 'i'";
+
+        if (Begin == End) {
+          ErrStr = "expected type";
           return Token{Token::Error, Begin, 0, APInt()};
         }
 
-        ++Begin;
+        if (*Begin == 'i') {
+          ++Begin;
+        } else if (*Begin == 'f') {
+          IsFloat = true;
+          ++Begin;
+        } else {
+          ErrStr = "expected 'i' or 'f'";
+          return Token{Token::Error, Begin, 0, APInt()};
+        }
+
         const char *WidthBegin = Begin;
         while (Begin != End && *Begin >= '0' && *Begin <= '9') {
           Width = Width*10 + (*Begin - '0');
@@ -160,6 +173,7 @@ FoundChar:
       T.Len = Begin - NameBegin + 1;
       T.Name = StringRef(NameBegin, NameEnd - NameBegin);
       T.Width = Width;
+      T.IsFloat = IsFloat;
       return T;
     }
   }
@@ -352,7 +366,7 @@ struct Parser {
                     std::string &ErrStr);
   bool typeCheckInst(Inst::Kind IK, unsigned &Width, std::vector<Inst *> &Ops,
                      std::string &ErrStr);
-  bool typeCheckOpsMatchingWidths(llvm::MutableArrayRef<Inst *> Ops,
+  bool typeCheckOpsMatchingTypes(llvm::MutableArrayRef<Inst *> Ops,
                                   std::string &ErrStr);
 
   bool parseLine(std::string &ErrStr);
@@ -412,9 +426,39 @@ bool Parser::isOverflow(Inst::Kind IK) {
           IK == Inst::SMulWithOverflow || IK == Inst::UMulWithOverflow);
 }
 
-bool Parser::typeCheckOpsMatchingWidths(llvm::MutableArrayRef<Inst *> Ops,
+bool Parser::typeCheckOpsMatchingTypes(llvm::MutableArrayRef<Inst *> Ops,
                                         std::string &ErrStr) {
   unsigned Width = 0;
+  bool IsFloat = false;
+  bool HaveType = false;
+
+  for (auto Op : Ops) {
+    if (Op->Width == 0)
+      continue;
+
+    if (!HaveType) {
+      Width = Op->Width;
+      IsFloat = Op->IsFloat;
+      HaveType = true;
+      continue;
+    }
+
+    if (Op->Width != Width) {
+      ErrStr = "operands have different widths";
+      return false;
+    }
+
+    if (Op->IsFloat != IsFloat) {
+      ErrStr = "operands have different types";
+      return false;
+    }
+  }
+
+  if (!HaveType) {
+    ErrStr = "at least one operand must be typed";
+    return false;
+  }
+
   for (auto Op : Ops) {
     if (Width == 0)
       Width = Op->Width;
@@ -455,7 +499,7 @@ bool Parser::typeCheckPhi(unsigned Width, Block *B,
     return false;
   }
 
-  if (!typeCheckOpsMatchingWidths(Ops, ErrStr))
+  if (!typeCheckOpsMatchingTypes(Ops, ErrStr))
     return false;
 
   if (Width != 0 && Width != Ops[0]->Width) {
@@ -478,7 +522,7 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
                            std::vector<Inst *> &Ops,
                            std::string &ErrStr) {
   unsigned MinOps = 2, MaxOps = 2;
-  llvm::MutableArrayRef<Inst *> OpsMatchingWidths = Ops;
+  llvm::MutableArrayRef<Inst *> OpsMatchingTypes = Ops;
 
   switch (IK) {
   case Inst::Const:
@@ -544,6 +588,25 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
   case Inst::UAddSat:
   case Inst::SSubSat:
   case Inst::USubSat:
+  case Inst::FAdd:
+  case Inst::FSub:
+  case Inst::FMul:
+  case Inst::FDiv:
+  case Inst::FRem:
+  case Inst::FCmpOEQ:
+  case Inst::FCmpOGT:
+  case Inst::FCmpOGE:
+  case Inst::FCmpOLT:
+  case Inst::FCmpOLE:
+  case Inst::FCmpONE:
+  case Inst::FCmpORD:
+  case Inst::FCmpUEQ:
+  case Inst::FCmpUGT:
+  case Inst::FCmpUGE:
+  case Inst::FCmpULT:
+  case Inst::FCmpULE:
+  case Inst::FCmpUNE:
+  case Inst::FCmpUNO:
     MinOps = MaxOps = 2;
     break;
 
@@ -561,7 +624,7 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
                  utostr(Ops[0]->Width);
         return false;
       }
-      OpsMatchingWidths =
+      OpsMatchingTypes =
           llvm::MutableArrayRef<Inst *>(Ops.data() + 1, Ops.size() - 1);
     }
     break;
@@ -591,6 +654,13 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
   case Inst::Cttz:
   case Inst::Ctlz:
   case Inst::Freeze:
+  case Inst::FNeg:
+  case Inst::FPTrunc:
+  case Inst::FPExt:
+  case Inst::FPToUI:
+  case Inst::FPToSI:
+  case Inst::UIToFP:
+  case Inst::SIToFP:
     MaxOps = MinOps = 1;
     break;
   case Inst::FShl:
@@ -600,6 +670,10 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
 
   default:
     llvm::report_fatal_error("unhandled");
+  }
+
+  if (Inst::isCmp(IK)) {
+    Width = 1;
   }
 
   if (MinOps == MaxOps && Ops.size() != MinOps) {
@@ -620,7 +694,7 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
     return false;
   }
 
-  // NOTE: We don't 'typeCheckOpsMatchingWidths' for ExtractValue
+  // NOTE: We don't 'typeCheckOpsMatchingTypes' for ExtractValue
   // instruction because its a tuple of {aggregate, index}. The first
   // element, aggregate is result of overflow instruction. The
   // aggregate is of 33 and 65 bits for 32 and 64 bit operands of
@@ -628,7 +702,7 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
   // ExtractValue instruction is an index value. We don't type check
   // the operands width as the two elements vary in width.
   if (IK != Inst::ExtractValue) {
-    if (!typeCheckOpsMatchingWidths(OpsMatchingWidths, ErrStr))
+    if (!typeCheckOpsMatchingTypes(OpsMatchingTypes, ErrStr))
       return false;
 
     for (auto Op : Ops) {
@@ -650,6 +724,23 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
 
   case Inst::Select:
     ExpectedWidth = Ops[1]->Width;
+    break;
+
+  case Inst::FCmpOEQ:
+  case Inst::FCmpOGT:
+  case Inst::FCmpOGE:
+  case Inst::FCmpOLT:
+  case Inst::FCmpOLE:
+  case Inst::FCmpONE:
+  case Inst::FCmpORD:
+  case Inst::FCmpUEQ:
+  case Inst::FCmpUGT:
+  case Inst::FCmpUGE:
+  case Inst::FCmpULT:
+  case Inst::FCmpULE:
+  case Inst::FCmpUNE:
+  case Inst::FCmpUNO:
+    ExpectedWidth = 1;
     break;
 
   case Inst::Eq:
@@ -677,6 +768,32 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
   case Inst::SMulWithOverflow:
   case Inst::UMulWithOverflow:
     ExpectedWidth = Ops[0]->Width + 1;
+    break;
+
+  case Inst::FPExt:
+    if (!Ops[0]->IsFloat ||
+        Ops[0]->Width != 32 ||
+        Width != 64) {
+      ErrStr = "fpext requires f32 -> f64";
+      return false;
+    }
+    break;
+
+  case Inst::FPTrunc:
+    if (!Ops[0]->IsFloat ||
+        Ops[0]->Width != 64 ||
+        Width != 32) {
+      ErrStr = "fptrunc requires f64 -> f32";
+      return false;
+    }
+    break;
+
+  case Inst::SIToFP:
+  case Inst::UIToFP:
+    if (Ops[0]->IsFloat) {
+      ErrStr = "integer-to-float conversion requires integer operand";
+      return false;
+    }
     break;
 
   case Inst::ExtractValue:
@@ -763,7 +880,7 @@ InstMapping Parser::parseInstMapping(std::string &ErrStr) {
   if (!SrcRep[1])
     return InstMapping();
 
-  if (!typeCheckOpsMatchingWidths(SrcRep, ErrStr)) {
+  if (!typeCheckOpsMatchingTypes(SrcRep, ErrStr)) {
     ErrStr = makeErrStr(ErrStr);
     return InstMapping();
   }

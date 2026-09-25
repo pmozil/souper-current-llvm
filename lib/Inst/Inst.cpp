@@ -45,6 +45,11 @@ bool Inst::operator<(const Inst &Other) const {
   if (Width > Other.Width)
     return false;
 
+  if (IsFloat < Other.IsFloat)
+    return true;
+  if (IsFloat > Other.IsFloat)
+    return false;
+
   switch (K) {
   case Const:
     return Val.ult(Other.Val);
@@ -113,6 +118,23 @@ std::string ReplacementContext::printInst(Inst *I, llvm::raw_ostream &Out,
   return printInstImpl(I, Out, printNames, I);
 }
 
+static void printType(const Inst *I, llvm::raw_ostream &Out) {
+  if (I->IsFloat) {
+    switch (I->Width) {
+    case 32:
+      Out << "f32";
+      return;
+    case 64:
+      Out << "f64";
+      return;
+    default:
+      llvm_unreachable("unsupported FP width");
+    }
+  }
+
+  Out << "i" << I->Width;
+}
+
 std::string ReplacementContext::printInstImpl(Inst *I, llvm::raw_ostream &Out,
                                               bool printNames, Inst *OrigI) {
 
@@ -134,7 +156,8 @@ std::string ReplacementContext::printInstImpl(Inst *I, llvm::raw_ostream &Out,
 
   case Inst::Const:
     I->Val.print(SS, false);
-    SS << ":i" << I->Val.getBitWidth();
+    SS << ":";
+    printType(I, SS);
     return SS.str();
 
   case Inst::UntypedConst:
@@ -183,8 +206,9 @@ std::string ReplacementContext::printInstImpl(Inst *I, llvm::raw_ostream &Out,
     case Inst::UMulO:
       break;
     default: {
-      Out << "%" << InstName << ":i" << I->Width << " = "
-          << Inst::getKindName(I->K);
+      Out << "%" << InstName << ":";
+      printType(I, Out);
+      Out << " = " << Inst::getKindName(I->K);
       if (I->K == Inst::Var) {
         if (I->KnownZeros.getBoolValue() || I->KnownOnes.getBoolValue())
           Out << " (knownBits=" << Inst::getKnownBitsString(I->KnownZeros, I->KnownOnes)
@@ -447,7 +471,7 @@ const char *Inst::getKindName(Kind K) {
   case SIToFP:
     return "sitofp";
   case FCmpOEQ:
-    return "fmp0eq";
+    return "fcmp0eq";
   case FCmpOGT:
     return "fcmp0gt";
   case FCmpOGE:
@@ -576,6 +600,32 @@ Inst::Kind Inst::getKind(std::string Name) {
                    .Case("uadd.sat", Inst::UAddSat)
                    .Case("ssub.sat", Inst::SSubSat)
                    .Case("usub.sat", Inst::USubSat)
+                   .Case("fadd", Inst::FAdd)
+                   .Case("fsub", Inst::FSub)
+                   .Case("fmul", Inst::FMul)
+                   .Case("fdiv", Inst::FDiv)
+                   .Case("frem", Inst::FRem)
+                   .Case("fneg", Inst::FNeg)
+                   .Case("fptrunc", Inst::FPTrunc)
+                   .Case("fpext", Inst::FPExt)
+                   .Case("fptoui", Inst::FPToUI)
+                   .Case("fptosi", Inst::FPToSI)
+                   .Case("uitofp", Inst::UIToFP)
+                   .Case("sitofp", Inst::SIToFP)
+                   .Case("fcmp0eq", Inst::FCmpOEQ)
+                   .Case("fcmp0gt", Inst::FCmpOGT)
+                   .Case("fcmp0ge", Inst::FCmpOGE)
+                   .Case("fcmp0lt", Inst::FCmpOLT)
+                   .Case("fcmp0le", Inst::FCmpOLE)
+                   .Case("fcmp0ne", Inst::FCmpONE)
+                   .Case("fcmpord", Inst::FCmpORD)
+                   .Case("fcmpueq", Inst::FCmpUEQ)
+                   .Case("fcmpugt", Inst::FCmpUGT)
+                   .Case("fcmpuge", Inst::FCmpUGE)
+                   .Case("fcmpult", Inst::FCmpULT)
+                   .Case("fcmpule", Inst::FCmpULE)
+                   .Case("fcmpune", Inst::FCmpUNE)
+                   .Case("fcmpun0", Inst::FCmpUNO)
                    .Case("extractvalue", Inst::ExtractValue)
                    .Case("reservedinst", Inst::ReservedInst)
                    .Case("hole", Inst::Hole)
@@ -587,6 +637,7 @@ Inst::Kind Inst::getKind(std::string Name) {
 void Inst::Profile(llvm::FoldingSetNodeID &ID) const {
   ID.AddInteger(K);
   ID.AddInteger(Width);
+  ID.AddInteger(IsFloat);
 
   switch (K) {
   case Const:
@@ -618,7 +669,7 @@ void Inst::Print() {
 }
 #endif
 
-Inst *InstContext::getConst(const llvm::APInt &Val) {
+Inst *InstContext::getConst(const llvm::APInt &Val, bool isFloat) {
   llvm::FoldingSetNodeID ID;
   ID.AddInteger(Inst::Const);
   ID.AddInteger(Val.getBitWidth());
@@ -633,6 +684,7 @@ Inst *InstContext::getConst(const llvm::APInt &Val) {
   N->K = Inst::Const;
   N->Width = Val.getBitWidth();
   N->Val = Val;
+  N->IsFloat = isFloat;
   InstSet.InsertNode(N, IP);
   return N;
 }
@@ -673,11 +725,12 @@ Inst *InstContext::getReservedInst() {
   return N;
 }
 
-Inst *InstContext::createHole(unsigned Width) {
+Inst *InstContext::createHole(unsigned Width, bool isFloat) {
   auto N = new Inst;
   Insts.emplace_back(N);
   N->K = Inst::Hole;
   N->Width = Width;
+  N->IsFloat = isFloat;
   return N;
 }
 
@@ -686,7 +739,7 @@ Inst *InstContext::createVar(unsigned Width, llvm::StringRef Name,
                              llvm::APInt Zero, llvm::APInt One, bool NonZero,
                              bool NonNegative, bool PowOfTwo, bool Negative,
                              unsigned NumSignBits, llvm::APInt DemandedBits,
-                             unsigned SynthesisConstID) {
+                             unsigned SynthesisConstID, bool isFloat) {
   // Create a new vector of Insts if Width is not found in VarInstsByWidth
   auto &InstList = VarInstsByWidth[Width];
   unsigned Number = InstList.size();
@@ -708,24 +761,25 @@ Inst *InstContext::createVar(unsigned Width, llvm::StringRef Name,
   I->NumSignBits = NumSignBits;
   I->DemandedBits = DemandedBits;
   I->SynthesisConstID = SynthesisConstID;
+  I->IsFloat = isFloat;
   return I;
 }
 
-Inst *InstContext::createVar(unsigned Width, llvm::StringRef Name) {
+Inst *InstContext::createVar(unsigned Width, llvm::StringRef Name, bool isFloat) {
   return createVar(Width, Name, /*Range=*/llvm::ConstantRange(Width, /*isFullSet=*/ true),
                     /*KnownZero=*/ llvm::APInt(Width, 0), /*KnownOne=*/ llvm::APInt(Width, 0),
                     /*NonZero=*/ false, /*NonNegative=*/ false, /*PowerOfTwo=*/ false,
                     /*Negative=*/ false, /*SignBits=*/ 1,
-                    /*DemandedBits=*/llvm::APInt::getAllOnes(Width), /*SynthesisConstID=*/0);
+                    /*DemandedBits=*/llvm::APInt::getAllOnes(Width), /*SynthesisConstID=*/0, isFloat);
 }
 
-Inst *InstContext::createSynthesisConstant(unsigned Width, unsigned SynthesisConstID) {
+Inst *InstContext::createSynthesisConstant(unsigned Width, unsigned SynthesisConstID, bool isFloat) {
   return createVar(Width,  ReservedConstPrefix + std::to_string(SynthesisConstID),
                    /*Range=*/llvm::ConstantRange(Width, /*isFullSet=*/ true),
                    /*KnownZero=*/ llvm::APInt(Width, 0), /*KnownOne=*/ llvm::APInt(Width, 0),
                    /*NonZero=*/ false, /*NonNegative=*/ false, /*PowerOfTwo=*/ false,
                    /*Negative=*/ false, /*SignBits=*/ 1,
-                   /*DemandedBits=*/llvm::APInt::getAllOnes(Width), /*SynthesisConstID=*/SynthesisConstID);
+                   /*DemandedBits=*/llvm::APInt::getAllOnes(Width), /*SynthesisConstID=*/SynthesisConstID, isFloat);
 }
 
 
@@ -775,7 +829,7 @@ Inst *InstContext::getPhi(Block *B, const std::vector<Inst *> &Ops) {
 
 Inst *InstContext::getInst(Inst::Kind K, unsigned Width,
                            const std::vector<Inst *> &Ops,
-                           llvm::APInt DemandedBits, bool Available) {
+                           llvm::APInt DemandedBits, bool Available, bool isFloat) {
   if (K == Inst::Var)
     llvm::report_fatal_error("Use createVar() to make a var, not getInst()");
 
@@ -811,15 +865,16 @@ Inst *InstContext::getInst(Inst::Kind K, unsigned Width,
   N->Available = Available;
   N->HarvestKind = HarvestType::HarvestedFromDef;
   N->HarvestFrom = nullptr;
+  N->IsFloat = isFloat;
   InstSet.InsertNode(N, IP);
   return N;
 }
 
 Inst *InstContext::getInst(Inst::Kind K, unsigned Width,
                            const std::vector<Inst *> &Ops,
-                           bool Available) {
+                           bool Available, bool isFloat) {
   llvm::APInt DemandedBits = llvm::APInt::getAllOnes(Width);
-  return getInst(K, Width, Ops, DemandedBits, Available);
+  return getInst(K, Width, Ops, DemandedBits, Available, isFloat);
 }
 
 std::vector<Inst *> InstContext::getVariables() const {
@@ -1024,6 +1079,41 @@ int Inst::getCost(Inst::Kind K) {
       return 2;
     default:
       return 1;
+  }
+}
+
+bool Inst::isFloatKind(Kind K) {
+  switch (K) {
+  case FAdd:
+  case FSub:
+  case FMul:
+  case FDiv:
+  case FRem:
+  case FNeg:
+  case FPTrunc:
+  case FPExt:
+  case FPToUI:
+  case FPToSI:
+  case UIToFP:
+  case SIToFP:
+  case FCmpOEQ:
+  case FCmpOGT:
+  case FCmpOGE:
+  case FCmpOLT:
+  case FCmpOLE:
+  case FCmpONE:
+  case FCmpORD:
+  case FCmpUEQ:
+  case FCmpUGT:
+  case FCmpUGE:
+  case FCmpULT:
+  case FCmpULE:
+  case FCmpUNE:
+  case FCmpUNO:
+    return true;
+
+  default:
+    return false;
   }
 }
 

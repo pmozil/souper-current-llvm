@@ -270,10 +270,11 @@ Inst *ExprBuilder::buildConstant(Constant *c) {
   } else if (auto cf = dyn_cast<ConstantFP>(c)) {
     // We do floats now as well, yaay
     // return IC.getConst(cf->getValueAPF().bitcastToAPInt());
-    // Inst *I = IC.getFloatConst(cf->getValueAPF().bitcastToAPInt());
-    Inst *I = IC.getConst(cf->getValueAPF().bitcastToAPInt());
-    I->IsFloat = true;
-    return I;
+    const APFloat &F = cf->getValueAPF();
+
+    return IC.getConst(
+        F.bitcastToAPInt(),
+        true);
   } else if (isa<ConstantPointerNull>(c) || isa<UndefValue>(c) ||
              isa<ConstantAggregateZero>(c)) {
     return IC.getConst(APInt(DL.getTypeSizeInBits(c->getType()), 0));
@@ -405,13 +406,13 @@ Inst *ExprBuilder::buildHelper(Value *V) {
       case FCmpInst::FCMP_FALSE: return IC.getConst(APInt(1, 0));
       default: llvm_unreachable("bad fcmp predicate");
     }
-    return IC.getInst(K, 1, {L, R});   // fcmp result is i1, same as icmp
+    return IC.getInst(K, 1, {L, R}, false);   // fcmp result is i1, same as icmp
   } else if (auto FNeg = dyn_cast<UnaryOperator>(V)) {
     // LLVM models fneg as a UnaryOperator (opcode Instruction::FNeg)
     if (FNeg->getOpcode() != Instruction::FNeg) return makeArrayRead(V);
     Inst *Op = get(FNeg->getOperand(0));
-    Inst *R = IC.getInst(Inst::FNeg, Op->Width, {Op});
-    R->IsFloat = true;
+    bool ResultIsFloat = V->getType()->isFloatingPointTy();
+    Inst *R = IC.getInst(Inst::FNeg, Op->Width, {Op}, ResultIsFloat);
     return R;
   } else if (auto BO = dyn_cast<BinaryOperator>(V)) {
     if (!isa<IntegerType>(BO->getType()))
@@ -517,11 +518,20 @@ Inst *ExprBuilder::buildHelper(Value *V) {
       default:
         llvm_unreachable("not BinOp");
     }
-    Inst *R2 = IC.getInst(K, L->Width, {L, R});
-    if (K == Inst::FAdd || K == Inst::FSub || K == Inst::FMul ||
-        K == Inst::FDiv || K == Inst::FRem) {
-        R2->IsFloat = true;
-    }
+    bool IsFP =
+        K == Inst::FAdd ||
+        K == Inst::FSub ||
+        K == Inst::FMul ||
+        K == Inst::FDiv ||
+        K == Inst::FRem;
+
+    Inst *R2 = IC.getInst(
+        K,
+        L->Width,
+        {L, R},
+        true,
+        IsFP);
+
     return R2;
   } else if (auto Sel = dyn_cast<SelectInst>(V)) {
     if (!isa<IntegerType>(Sel->getType()))

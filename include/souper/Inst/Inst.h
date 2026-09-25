@@ -214,6 +214,28 @@ struct Inst : llvm::FoldingSetNode {
   std::vector<llvm::ConstantRange> RangeRefinement;
   int nReservedConsts = -1;
   int nHoles = -1;
+
+  bool isFloat() const {
+    return IsFloat;
+  }
+
+  bool isFloat32() const {
+    return IsFloat && Width == 32;
+  }
+
+  bool isFloat64() const {
+    return IsFloat && Width == 64;
+  }
+
+  bool isSupportedFloat() const {
+    return IsFloat && (Width == 32 || Width == 64);
+  }
+
+  bool isInteger() const {
+    return !IsFloat;
+  }
+
+  static bool isFloatKind(Kind K);
 };
 
 /// A mapping from an Inst to a replacement. This may either represent a
@@ -273,29 +295,31 @@ class InstContext {
   unsigned ReservedConstCounter = 0;
 
 public:
-  Inst *getConst(const llvm::APInt &I);
+  Inst *getConst(const llvm::APInt &I, bool isFloat = false);
   Inst *getUntypedConst(const llvm::APInt &I);
   Inst *getReservedConst();
   Inst *getReservedInst();
 
-  Inst *createHole(unsigned Width);
-  Inst *createSynthesisConstant(unsigned Width, unsigned SynthesisConstID);
-  Inst *createVar(unsigned Width, llvm::StringRef Name);
+  Inst *createHole(unsigned Width, bool isFloat = false);
+  Inst *createSynthesisConstant(unsigned Width, unsigned SynthesisConstID,
+                                bool isFloat = false);
+  Inst *createVar(unsigned Width, llvm::StringRef Name, bool IsFloat = false);
   Inst *createVar(unsigned Width, llvm::StringRef Name,
                   llvm::ConstantRange Range,
                   llvm::APInt Zero, llvm::APInt One,
                   bool NonZero, bool NonNegative, bool PowOfTwo,
                   bool Negative, unsigned NumSignBits,
-                  llvm::APInt Demandedbits, unsigned SynthesisConstID);
+                  llvm::APInt Demandedbits, unsigned SynthesisConstID,
+                  bool IsFloat = false);
   Block *createBlock(unsigned Preds);
 
   Inst *getPhi(Block *B, const std::vector<Inst *> &Ops);
   Inst *getPhi(Block *B, const std::vector<Inst *> &Ops, llvm::APInt Demandedbits);
 
   Inst *getInst(Inst::Kind K, unsigned Width, const std::vector<Inst *> &Ops,
-                bool Available=true);
+                bool Available=true, bool isFloat = false);
   Inst *getInst(Inst::Kind K, unsigned Width, const std::vector<Inst *> &Ops,
-                llvm::APInt DemandedBits, bool Available);
+                llvm::APInt DemandedBits, bool Available, bool isFloat = false);
 
   std::vector<Inst *> getVariables() const;
   std::vector<Inst *> getVariablesFor(Inst *Root) const;
