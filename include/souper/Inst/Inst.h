@@ -103,6 +103,34 @@ struct Inst : llvm::FoldingSetNode {
     BitReverse,
     FShl,
     FShr,
+
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
+    FRem,
+    FNeg,
+    FPTrunc,
+    FPExt,
+    FPToUI,
+    FPToSI,
+    UIToFP,
+    SIToFP,
+    FCmpOEQ,
+    FCmpOGT,
+    FCmpOGE,
+    FCmpOLT,
+    FCmpOLE,
+    FCmpONE,
+    FCmpORD,
+    FCmpUEQ,
+    FCmpUGT,
+    FCmpUGE,
+    FCmpULT,
+    FCmpULE,
+    FCmpUNE,
+    FCmpUNO,
+
     ExtractValue,
     SAddWithOverflow,
     SAddO,
@@ -131,6 +159,7 @@ struct Inst : llvm::FoldingSetNode {
   Kind K;
   unsigned Number;
   unsigned Width;
+  bool IsFloat = false;
   Block *B;
   bool Available = true;
   llvm::APInt Val;

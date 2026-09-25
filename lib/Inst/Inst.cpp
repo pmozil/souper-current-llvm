@@ -422,6 +422,58 @@ const char *Inst::getKindName(Kind K) {
     return "fshl";
   case FShr:
     return "fshr";
+  case FAdd:
+    return "fadd";
+  case FSub:
+    return "fsub";
+  case FMul:
+    return "fmul";
+  case FDiv:
+    return "fdiv";
+  case FRem:
+    return "frem";
+  case FNeg:
+    return "fneg";
+  case FPTrunc:
+    return "fptrunc";
+  case FPExt:
+    return "fpext";
+  case FPToUI:
+    return "fptoui";
+  case FPToSI:
+    return "fptosi";
+  case UIToFP:
+    return "uitofp";
+  case SIToFP:
+    return "sitofp";
+  case FCmpOEQ:
+    return "fmp0eq";
+  case FCmpOGT:
+    return "fcmp0gt";
+  case FCmpOGE:
+    return "fcmp0ge";
+  case FCmpOLT:
+    return "fcmp0lt";
+  case FCmpOLE:
+    return "fcmp0le";
+  case FCmpONE:
+    return "fcmpone";
+  case FCmpORD:
+    return "fcmpord";
+  case FCmpUEQ:
+    return "fcmpueq";
+  case FCmpUGT:
+    return "fcmpugt";
+  case FCmpUGE:
+    return "fcmpuge";
+  case FCmpULT:
+    return "fcmpult";
+  case FCmpULE:
+    return "fcmpule";
+  case FCmpUNE:
+    return "fcmpune";
+  case FCmpUNO:
+    return "fcmpun0";
   case ExtractValue:
     return "extractvalue";
   case SAddWithOverflow:
@@ -819,6 +871,8 @@ bool Inst::isCommutative(Inst::Kind K) {
   case Xor:
   case Eq:
   case Ne:
+  case FAdd:
+  case FMul:
     return true;
   default:
     return false;
@@ -827,7 +881,12 @@ bool Inst::isCommutative(Inst::Kind K) {
 
 bool Inst::isCmp(Inst::Kind K) {
   return K == Inst::Eq || K == Inst::Ne || K == Inst::Ult ||
-    K == Inst::Slt || K == Inst::Ule || K == Inst::Sle;
+    K == Inst::Slt || K == Inst::Ule || K == Inst::Sle ||
+    K == Inst::FCmpOEQ || K == Inst::FCmpOGT || K == Inst::FCmpOGE ||
+    K == Inst::FCmpOLT || K == Inst::FCmpOLE || K == Inst::FCmpONE ||
+    K == Inst::FCmpORD || K == Inst::FCmpUEQ || K == Inst::FCmpUGT ||
+    K == Inst::FCmpUGE || K == Inst::FCmpULT || K == Inst::FCmpULE ||
+    K == Inst::FCmpUNE || K == Inst::FCmpUNO;
 }
 
 bool Inst::isTernary(Inst::Kind K) {
@@ -947,6 +1006,22 @@ int Inst::getCost(Inst::Kind K) {
     case USubSat:
     case Select:
       return 3;
+    case FAdd:
+    case FSub:
+    case FNeg:
+      return 2;
+    case FMul:
+      return 3;
+    case FDiv:
+    case FRem:
+      return 12;
+    case FPToUI:
+    case FPToSI:
+    case UIToFP:
+    case SIToFP:
+    case FPTrunc:
+    case FPExt:
+      return 2;
     default:
       return 1;
   }

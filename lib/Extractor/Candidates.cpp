@@ -228,16 +228,17 @@ Inst *ExprBuilder::makeArrayRead(Value *V) {
   KnownBits Known(Width);
   bool NonZero = false, NonNegative = false, PowOfTwo = false, Negative = false;
   unsigned NumSignBits = 1;
+  bool isFloat = V->getType()->isFloatingPointTy();
   ConstantRange Range = llvm::ConstantRange(Width, /*isFullSet=*/true);
   if (HarvestDataFlowFacts) {
     if (V->getType()->isIntOrIntVectorTy(Width) ||
         V->getType()->isPtrOrPtrVectorTy()) {
       computeKnownBits(V, Known, DL);
       NonZero = isKnownNonZero(V, DL);
-      NonNegative = isKnownNonNegative(V, DL);
-      PowOfTwo = isKnownToBeAPowerOfTwo(V, DL);
-      Negative = isKnownNegative(V, DL);
-      NumSignBits = ComputeNumSignBits(V, DL);
+      NonNegative = isFloat ? false : isKnownNonNegative(V, DL);
+      PowOfTwo = isFloat ? false : isKnownToBeAPowerOfTwo(V, DL);
+      Negative = isFloat ? false : isKnownNegative(V, DL);
+      NumSignBits = isFloat ? false : ComputeNumSignBits(V, DL);
     }
 
     if (V->getType()->isIntegerTy()) {
@@ -255,16 +256,24 @@ Inst *ExprBuilder::makeArrayRead(Value *V) {
     }
   }
 
-  return IC.createVar(Width, Name, Range, Known.Zero, Known.One, NonZero, NonNegative,
+  Inst *I = IC.createVar(Width, Name, Range, Known.Zero, Known.One, NonZero, NonNegative,
                       PowOfTwo, Negative, NumSignBits,
                       llvm::APInt::getAllOnes(Width), 0);
+  I->IsFloat = isFloat;
+
+  return I;
 }
 
 Inst *ExprBuilder::buildConstant(Constant *c) {
   if (auto ci = dyn_cast<ConstantInt>(c)) {
     return IC.getConst(ci->getValue());
   } else if (auto cf = dyn_cast<ConstantFP>(c)) {
-    return IC.getConst(cf->getValueAPF().bitcastToAPInt());
+    // We do floats now as well, yaay
+    // return IC.getConst(cf->getValueAPF().bitcastToAPInt());
+    // Inst *I = IC.getFloatConst(cf->getValueAPF().bitcastToAPInt());
+    Inst *I = IC.getConst(cf->getValueAPF().bitcastToAPInt());
+    I->IsFloat = true;
+    return I;
   } else if (isa<ConstantPointerNull>(c) || isa<UndefValue>(c) ||
              isa<ConstantAggregateZero>(c)) {
     return IC.getConst(APInt(DL.getTypeSizeInBits(c->getType()), 0));
@@ -371,6 +380,39 @@ Inst *ExprBuilder::buildHelper(Value *V) {
       default:
         llvm_unreachable("not ICmp");
     }
+  } else if (auto FCI = dyn_cast<FCmpInst>(V)) {
+    if (!isa<IntegerType>(FCI->getType()))  // vector fcmp, skip for now
+      return makeArrayRead(V);
+    Inst *L = get(FCI->getOperand(0)), *R = get(FCI->getOperand(1));
+    Inst::Kind K;
+    switch (FCI->getPredicate()) {
+      case FCmpInst::FCMP_OEQ: K = Inst::FCmpOEQ; break;
+      case FCmpInst::FCMP_OGT: K = Inst::FCmpOGT; break;
+      case FCmpInst::FCMP_OGE: K = Inst::FCmpOGE; break;
+      case FCmpInst::FCMP_OLT: K = Inst::FCmpOLT; break;
+      case FCmpInst::FCMP_OLE: K = Inst::FCmpOLE; break;
+      case FCmpInst::FCMP_ONE: K = Inst::FCmpONE; break;
+      case FCmpInst::FCMP_ORD: K = Inst::FCmpORD; break;
+      case FCmpInst::FCMP_UEQ: K = Inst::FCmpUEQ; break;
+      case FCmpInst::FCMP_UGT: K = Inst::FCmpUGT; break;
+      case FCmpInst::FCMP_UGE: K = Inst::FCmpUGE; break;
+      case FCmpInst::FCMP_ULT: K = Inst::FCmpULT; break;
+      case FCmpInst::FCMP_ULE: K = Inst::FCmpULE; break;
+      case FCmpInst::FCMP_UNE: K = Inst::FCmpUNE; break;
+      case FCmpInst::FCMP_UNO: K = Inst::FCmpUNO; break;
+      // FCMP_TRUE / FCMP_FALSE: constant-fold instead of emitting an Inst
+      case FCmpInst::FCMP_TRUE:  return IC.getConst(APInt(1, 1));
+      case FCmpInst::FCMP_FALSE: return IC.getConst(APInt(1, 0));
+      default: llvm_unreachable("bad fcmp predicate");
+    }
+    return IC.getInst(K, 1, {L, R});   // fcmp result is i1, same as icmp
+  } else if (auto FNeg = dyn_cast<UnaryOperator>(V)) {
+    // LLVM models fneg as a UnaryOperator (opcode Instruction::FNeg)
+    if (FNeg->getOpcode() != Instruction::FNeg) return makeArrayRead(V);
+    Inst *Op = get(FNeg->getOperand(0));
+    Inst *R = IC.getInst(Inst::FNeg, Op->Width, {Op});
+    R->IsFloat = true;
+    return R;
   } else if (auto BO = dyn_cast<BinaryOperator>(V)) {
     if (!isa<IntegerType>(BO->getType()))
       return makeArrayRead(V); // could be a vector operation
@@ -457,10 +499,30 @@ Inst *ExprBuilder::buildHelper(Value *V) {
         else
           K = Inst::AShr;
         break;
+      case Instruction::FAdd:
+        K = Inst::FAdd;
+        break;
+      case Instruction::FSub:
+        K = Inst::FSub;
+        break;
+      case Instruction::FMul:
+        K = Inst::FMul;
+        break;
+      case Instruction::FDiv:
+        K = Inst::FDiv;
+        break;
+      case Instruction::FRem:
+        K = Inst::FRem;
+        break;
       default:
         llvm_unreachable("not BinOp");
     }
-    return IC.getInst(K, L->Width, {L, R});
+    Inst *R2 = IC.getInst(K, L->Width, {L, R});
+    if (K == Inst::FAdd || K == Inst::FSub || K == Inst::FMul ||
+        K == Inst::FDiv || K == Inst::FRem) {
+        R2->IsFloat = true;
+    }
+    return R2;
   } else if (auto Sel = dyn_cast<SelectInst>(V)) {
     if (!isa<IntegerType>(Sel->getType()))
       return makeArrayRead(V); // could be a vector operation
@@ -498,6 +560,33 @@ Inst *ExprBuilder::buildHelper(Value *V) {
       if (!isa<IntegerType>(Cast->getType()))
         break; // could be a vector operation
       return IC.getInst(Inst::Trunc, DestSize, {Op});
+
+    case Instruction::FPTrunc: {
+      Inst *R = IC.getInst(Inst::FPTrunc, DestSize, {Op});
+      R->IsFloat = true;
+      return R;
+    }
+    case Instruction::FPExt: {
+      Inst *R = IC.getInst(Inst::FPExt, DestSize, {Op});
+      R->IsFloat = true;
+      return R;
+    }
+    case Instruction::UIToFP: {
+      Inst *R = IC.getInst(Inst::UIToFP, DestSize, {Op});
+      R->IsFloat = true;
+      return R;
+    }
+    case Instruction::SIToFP: {
+      Inst *R = IC.getInst(Inst::SIToFP, DestSize, {Op});
+      R->IsFloat = true;
+      return R;
+    }
+    case Instruction::FPToUI: {
+      return IC.getInst(Inst::FPToUI, DestSize, {Op});
+    }
+    case Instruction::FPToSI: {
+      return IC.getInst(Inst::FPToSI, DestSize, {Op});
+    }
 
     default:
       ; // fallthrough to return below
