@@ -544,8 +544,16 @@ Inst *ExprBuilder::buildHelper(Value *V) {
     unsigned DestSize = DL.getTypeSizeInBits(Cast->getType());
 
     switch (Cast->getOpcode()) {
-    case Instruction::BitCast:
-      return Op;
+    case Instruction::BitCast: {
+      bool DestIsFloat = Cast->getType()->isFloatingPointTy();
+      if (DestIsFloat == Op->IsFloat)
+        return Op;   // no actual reinterpretation needed
+      // genuine reinterpret: same bit pattern, different sort tag.
+      // Since Souper's Inst has no dedicated "reinterpret" opcode, the
+      // simplest correct fix is to fall back to opaque treatment here
+      // rather than silently mislabeling:
+      return makeArrayRead(V);
+    }
 
     case Instruction::IntToPtr:
     case Instruction::PtrToInt:
@@ -572,23 +580,19 @@ Inst *ExprBuilder::buildHelper(Value *V) {
       return IC.getInst(Inst::Trunc, DestSize, {Op});
 
     case Instruction::FPTrunc: {
-      Inst *R = IC.getInst(Inst::FPTrunc, DestSize, {Op});
-      R->IsFloat = true;
+      Inst *R = IC.getInst(Inst::FPTrunc, DestSize, {Op}, true, true);
       return R;
     }
     case Instruction::FPExt: {
-      Inst *R = IC.getInst(Inst::FPExt, DestSize, {Op});
-      R->IsFloat = true;
+      Inst *R = IC.getInst(Inst::FPExt, DestSize, {Op}, true, true);
       return R;
     }
     case Instruction::UIToFP: {
-      Inst *R = IC.getInst(Inst::UIToFP, DestSize, {Op});
-      R->IsFloat = true;
+      Inst *R = IC.getInst(Inst::UIToFP, DestSize, {Op}, true, true);
       return R;
     }
     case Instruction::SIToFP: {
-      Inst *R = IC.getInst(Inst::SIToFP, DestSize, {Op});
-      R->IsFloat = true;
+      Inst *R = IC.getInst(Inst::SIToFP, DestSize, {Op}, true, true);
       return R;
     }
     case Instruction::FPToUI: {

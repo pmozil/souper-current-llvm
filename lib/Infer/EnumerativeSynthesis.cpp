@@ -62,6 +62,35 @@ static const std::vector<Inst::Kind> TernaryOperators = {
   Inst::Select, Inst::FShl, Inst::FShr
 };
 
+static const std::vector<Inst::Kind> FloatUnaryOperators = {
+  Inst::FNeg,
+};
+
+static const std::vector<Inst::Kind> FloatBinaryOperators = {
+  Inst::FAdd,
+  Inst::FSub,
+  Inst::FMul,
+  Inst::FDiv,
+  Inst::FRem,
+};
+
+static const std::vector<Inst::Kind> FloatCompareOperators = {
+  Inst::FCmpOEQ,
+  Inst::FCmpOGT,
+  Inst::FCmpOGE,
+  Inst::FCmpOLT,
+  Inst::FCmpOLE,
+  Inst::FCmpONE,
+  Inst::FCmpORD,
+  Inst::FCmpUEQ,
+  Inst::FCmpUGT,
+  Inst::FCmpUGE,
+  Inst::FCmpULT,
+  Inst::FCmpULE,
+  Inst::FCmpUNE,
+  Inst::FCmpUNO,
+};
+
 namespace {
   static cl::opt<unsigned> MaxNumInstructions("souper-enumerative-synthesis-max-instructions",
     cl::desc("Maximum number of instructions to synthesize (default=0)."),
@@ -105,6 +134,11 @@ namespace {
   static cl::opt<bool> TryShrinkConsts("souper-shrink-consts",
     cl::desc("Try to shrink constants (defaults=false)"),
     cl::init(false));
+}
+
+static bool sameType(const Inst *A, const Inst *B) {
+  return A->Width == B->Width &&
+         A->IsFloat == B->IsFloat;
 }
 
 // TODO
@@ -789,13 +823,25 @@ std::error_code synthesizeWithKLEE(SynthesisContext &SC, std::vector<Inst *> &RH
   return EC;
 }
 
+static bool containsFloat(const Inst *Root) {
+  std::set<const Inst *> Visited;
+  std::function<bool(const Inst *)> Visit = [&](const Inst *I) -> bool {
+    if (!Visited.insert(I).second) return false;
+    if (I->IsFloat) return true;
+    for (Inst *Op : I->Ops) if (Visit(Op)) return true;
+    return false;
+  };
+  return Visit(Root);
+}
+
 std::error_code verify(SynthesisContext &SC, std::vector<Inst *> &RHSs,
                        const std::vector<souper::Inst *> &Guesses) {
   std::error_code EC;
   if (SkipSolver || Guesses.empty())
     return EC;
 
-  return UseAlive ? synthesizeWithAlive(SC, RHSs, Guesses) :
+  bool NeedsAlive = UseAlive || containsFloat(SC.LHS);
+  return NeedsAlive ? synthesizeWithAlive(SC, RHSs, Guesses) :
                     synthesizeWithKLEE(SC, RHSs, Guesses);
 }
 

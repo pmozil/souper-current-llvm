@@ -471,15 +471,15 @@ const char *Inst::getKindName(Kind K) {
   case SIToFP:
     return "sitofp";
   case FCmpOEQ:
-    return "fcmp0eq";
+    return "fcmpoeq";
   case FCmpOGT:
-    return "fcmp0gt";
+    return "fcmpogt";
   case FCmpOGE:
-    return "fcmp0ge";
+    return "fcmpoge";
   case FCmpOLT:
-    return "fcmp0lt";
+    return "fcmpolt";
   case FCmpOLE:
-    return "fcmp0le";
+    return "fcmpole";
   case FCmpONE:
     return "fcmpone";
   case FCmpORD:
@@ -497,7 +497,7 @@ const char *Inst::getKindName(Kind K) {
   case FCmpUNE:
     return "fcmpune";
   case FCmpUNO:
-    return "fcmpun0";
+    return "fcmpuno";
   case ExtractValue:
     return "extractvalue";
   case SAddWithOverflow:
@@ -612,12 +612,12 @@ Inst::Kind Inst::getKind(std::string Name) {
                    .Case("fptosi", Inst::FPToSI)
                    .Case("uitofp", Inst::UIToFP)
                    .Case("sitofp", Inst::SIToFP)
-                   .Case("fcmp0eq", Inst::FCmpOEQ)
-                   .Case("fcmp0gt", Inst::FCmpOGT)
-                   .Case("fcmp0ge", Inst::FCmpOGE)
-                   .Case("fcmp0lt", Inst::FCmpOLT)
-                   .Case("fcmp0le", Inst::FCmpOLE)
-                   .Case("fcmp0ne", Inst::FCmpONE)
+                   .Case("fcmpoeq", Inst::FCmpOEQ)
+                   .Case("fcmpogt", Inst::FCmpOGT)
+                   .Case("fcmpoge", Inst::FCmpOGE)
+                   .Case("fcmpolt", Inst::FCmpOLT)
+                   .Case("fcmpole", Inst::FCmpOLE)
+                   .Case("fcmpone", Inst::FCmpONE)
                    .Case("fcmpord", Inst::FCmpORD)
                    .Case("fcmpueq", Inst::FCmpUEQ)
                    .Case("fcmpugt", Inst::FCmpUGT)
@@ -625,7 +625,7 @@ Inst::Kind Inst::getKind(std::string Name) {
                    .Case("fcmpult", Inst::FCmpULT)
                    .Case("fcmpule", Inst::FCmpULE)
                    .Case("fcmpune", Inst::FCmpUNE)
-                   .Case("fcmpun0", Inst::FCmpUNO)
+                   .Case("fcmpuno", Inst::FCmpUNO)
                    .Case("extractvalue", Inst::ExtractValue)
                    .Case("reservedinst", Inst::ReservedInst)
                    .Case("hole", Inst::Hole)
