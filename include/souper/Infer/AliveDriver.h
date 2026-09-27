@@ -52,8 +52,8 @@ private:
   std::unordered_map<std::string, IR::Type*> TypeCache;
 
 
-  IR::Type &getType(int n);
-  IR::Type &getOverflowType(int n);
+  IR::Type &getType(unsigned Width, bool IsFloat = false);
+  IR::Type &getOverflowType(int n, bool IsFloat = false);
 
   bool translateRoot(const Inst *I, const Inst *PC, IR::Function &F, Cache &ExprCache);
   bool translateAndCache(const Inst *I, IR::Function &F, Cache &ExprCache);

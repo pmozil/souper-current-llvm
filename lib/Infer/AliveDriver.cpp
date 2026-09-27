@@ -87,6 +87,17 @@ public:
       (t, std::move(name), *toValue(t, a), Op));
   }
 
+  template <typename A>
+  IR::Value *fpConversionOp(IR::Type &t, std::string name, A a,
+                          IR::FpConversionOp::Op Op) {
+    return append
+      (std::make_unique<IR::FpConversionOp>
+      (t, std::move(name), *toValue(t, a), Op,
+      IR::FpRoundingMode::Default,
+      IR::FpExceptionMode::Ignore, 0,
+      IR::FastMathFlags()));
+  }
+
   template <typename A, typename B, typename C>
   IR::Value *select(IR::Type &t, std::string name, A a, B b, C c) {
     return append
@@ -100,6 +111,18 @@ public:
     return append
       (std::make_unique<IR::ICmp>
       (t, std::move(name), cond, *toValue(t, a), *toValue(t, b)));
+  }
+
+  template <typename A, typename B>
+  IR::Value *fCmp(IR::Type &t,
+                std::string name,
+                IR::FCmp::Cond Cond,
+                A a,
+                B b) {
+    return append
+      (std::make_unique<IR::FCmp>
+      (t, std::move(name), Cond, *toValue(t, a), *toValue(t, b),
+      IR::FastMathFlags(), IR::FpExceptionMode::Ignore, false));
   }
 
   IR::Value *extractvalue(IR::Type &t, std::string name, IR::Value *a, unsigned idx) {
@@ -118,6 +141,11 @@ public:
 
   IR::Value *val(IR::Type &t, llvm::APInt val) {
     return toValue(t, val);
+  }
+
+  IR::Value *fpVal(IR::Type &t,
+                 const llvm::APInt &Bits) {
+    return toValue(t, Bits);
   }
 
   template<typename T>
@@ -140,6 +168,22 @@ public:
       (std::make_unique<IR::UnaryOp>
       (t, std::move(name), *toValue(t, a), Op));
   }
+
+  template<class A>
+IR::Value *unaryOp(IR::Type &t, std::string name, A a, IR::FpUnaryOp::Op op) {
+  return append(
+      std::make_unique<IR::FpUnaryOp>(
+          t, std::move(name), *toValue(t, a), op,
+          IR::FastMathFlags(), IR::FpRoundingMode::Default, IR::FpExceptionMode::Ignore));
+}
+
+template<class A, class B>
+IR::Value *binOp(IR::Type &t, std::string name, A a, B b, IR::FpBinOp::Op op) {
+  return append(
+      std::make_unique<IR::FpBinOp>(
+          t, std::move(name), *toValue(t, a), *toValue(t, b), op,
+          IR::FastMathFlags(), IR::FpRoundingMode::Default, IR::FpExceptionMode::Ignore));
+}
 
   // Unimplemented : Freeze, CopyOp, Unreachable
 
@@ -434,8 +478,8 @@ bool souper::AliveDriver::translateRoot(const souper::Inst *I, const Inst *PC,
   if (PC) {
     Builder.assume(ExprCache[PC]);
   }
-  Builder.ret(getType(I->Width), ExprCache[I]);
-  F.setType(getType(I->Width));
+  Builder.ret(getType(I->Width, I->IsFloat), ExprCache[I]);
+  F.setType(getType(I->Width, I->IsFloat));
   return true;
 }
 
@@ -516,7 +560,7 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
     NameMap[I] = Name;
   }
 
-  auto &t = getType(I->Width);
+  auto &t = getType(I->Width, I->IsFloat);
 
   switch (I->K) {
     case souper::Inst::Var: {
@@ -532,7 +576,11 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
       return true;
     }
     case souper::Inst::Const: {
-      ExprCache[I] = Builder.val(t, I->Val);
+      if (I->IsFloat) {
+        ExprCache[I] = Builder.fpVal(t, I->Val);
+      } else {
+        ExprCache[I] = Builder.val(t, I->Val);
+      }
       return true;
     }
 
@@ -550,6 +598,16 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
         return false;
       }
       ExprCache[I] = ExprCache[I->Ops[0]];
+      return true;
+    }
+
+    case souper::Inst::FNeg: {
+      ExprCache[I] =
+          Builder.unaryOp(
+              t,
+              Name,
+              ExprCache[I->Ops[0]],
+              IR::FpUnaryOp::FNeg);
       return true;
     }
 
@@ -637,6 +695,22 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
     BINOPOV(SMulWithOverflow, SMul_Overflow)
     BINOPOV(UMulWithOverflow, UMul_Overflow)
 
+    #define FPBINOP(SOUPER, ALIVE) \
+      case souper::Inst::SOUPER: { \
+        ExprCache[I] = Builder.binOp( \
+            t, Name, \
+            ExprCache[I->Ops[0]], \
+            ExprCache[I->Ops[1]], \
+            IR::FpBinOp::ALIVE); \
+        return true; \
+      }
+
+    FPBINOP(FAdd, FAdd);
+    FPBINOP(FSub, FSub);
+    FPBINOP(FMul, FMul);
+    FPBINOP(FDiv, FDiv);
+    FPBINOP(FRem, FRem);
+
     #define TERNOP(SOUPER, ALIVE) case souper::Inst::SOUPER: {   \
       ExprCache[I] = Builder.ternaryOp(t, Name, ExprCache        \
       [I->Ops[0]], ExprCache[I->Ops[1]], ExprCache[I->Ops[2]],   \
@@ -659,6 +733,27 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
     ICMP(Sle, SLE);
     ICMP(Slt, SLT);
 
+    #define FCMP(SOUPER, ALIVE) case souper::Inst::SOUPER: {     \
+      ExprCache[I] = Builder.fCmp(t, Name, IR::FCmp::ALIVE,      \
+      ExprCache[I->Ops[0]], ExprCache[I->Ops[1]]);               \
+      return true;                                               \
+    }
+
+    FCMP(FCmpOEQ, OEQ);
+    FCMP(FCmpOGT, OGT);
+    FCMP(FCmpOGE, OGE);
+    FCMP(FCmpOLT, OLT);
+    FCMP(FCmpOLE, OLE);
+    FCMP(FCmpONE, ONE);
+    FCMP(FCmpORD, ORD);
+    FCMP(FCmpUEQ, UEQ);
+    FCMP(FCmpUGT, UGT);
+    FCMP(FCmpUGE, UGE);
+    FCMP(FCmpULT, ULT);
+    FCMP(FCmpULE, ULE);
+    FCMP(FCmpUNE, UNE);
+    FCMP(FCmpUNO, UNO);
+
     #define CONVOP(SOUPER, ALIVE) case souper::Inst::SOUPER: {   \
       ExprCache[I] = Builder.conversionOp(t, Name,               \
       ExprCache[I->Ops[0]], IR::ConversionOp::ALIVE);            \
@@ -668,6 +763,18 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
     CONVOP(SExt, SExt);
     CONVOP(ZExt, ZExt);
     CONVOP(Trunc, Trunc);
+
+    #define FPCONVOP(SOUPER, ALIVE) case souper::Inst::SOUPER: {   \
+      ExprCache[I] = Builder.fpConversionOp(t, Name,               \
+      ExprCache[I->Ops[0]], IR::FpConversionOp::ALIVE);            \
+      return true;                                               \
+    }
+    FPCONVOP(FPTrunc, FPTrunc);
+    FPCONVOP(FPExt,   FPExt);
+    FPCONVOP(FPToUI, FPToUInt);
+    FPCONVOP(FPToSI, FPToSInt);
+    FPCONVOP(UIToFP, UIntToFP);
+    FPCONVOP(SIToFP, SIntToFP);
 
     #define UNARYOP(SOUPER, ALIVE) case souper::Inst::SOUPER: {  \
       ExprCache[I] = Builder.unaryOp(t, Name,                    \
@@ -689,6 +796,9 @@ bool
 souper::AliveDriver::translateDataflowFacts(const souper::Inst* I,
                                             IR::Function& F,
                                             souper::AliveDriver::Cache& ExprCache) {
+  if (I->IsFloat) {
+    return true;
+  }
   DummyExprBuilder EB(IC);
   auto DataFlowConstraints = EB.getDataflowConditions(const_cast<Inst *>(I));
   //FIXME: Get rid of the const_cast by making getDataflowConditions take const Inst *
@@ -708,6 +818,10 @@ void
 souper::AliveDriver::translateDemandedBits(const souper::Inst* I,
                      IR::Function& F,
                      souper::AliveDriver::Cache& ExprCache) {
+  if (I->IsFloat) {
+    return;
+  }
+
   FunctionBuilder Builder(F);
 
   auto DemandedBits = IsLHS ? I->DemandedBits : LHS->DemandedBits;
@@ -715,26 +829,72 @@ souper::AliveDriver::translateDemandedBits(const souper::Inst* I,
   assert(DemandedBits.getBitWidth() == I-> Width && "Uninitialized DemandedBits");
 
   if (!DemandedBits.isAllOnes()) {
-    auto DBMask = Builder.val(getType(I->Width), DemandedBits);
+    auto DBMask = Builder.val(getType(I->Width, I->IsFloat), DemandedBits);
 
-    ExprCache[I] = Builder.binOp(getType(I->Width),
+    ExprCache[I] = Builder.binOp(getType(I->Width, I->IsFloat),
                                  "%" + std::to_string(InstNumbers++), ExprCache[I],
                                  DBMask, IR::BinOp::And);
   }
 }
 
-IR::Type &souper::AliveDriver::getType(int Width) {
-  std::string n = "i" + std::to_string(Width);
-  if (TypeCache.find(n) == TypeCache.end()) {
-    TypeCache[n] = new IR::IntType(std::move(n), Width);
+// IR::Type &souper::AliveDriver::getType(int Width) {
+//   std::string n = "i" + std::to_string(Width);
+//   if (TypeCache.find(n) == TypeCache.end()) {
+//     TypeCache[n] = new IR::IntType(std::move(n), Width);
+//   }
+//   return *TypeCache[n];
+// }
+
+IR::Type &souper::AliveDriver::getType(
+    unsigned Width,
+    bool IsFloat) {
+
+  if (!IsFloat) {
+    std::string N = "i" + std::to_string(Width);
+    std::string N1 = "i" + std::to_string(Width);
+
+    auto It = TypeCache.find(N);
+    if (It == TypeCache.end()) {
+      TypeCache[N] = new IR::IntType(std::move(N1), Width);
+    }
+
+    return *TypeCache[N];
   }
-  return *TypeCache[n];
+
+  if (Width == 32) {
+    // Use the exact Alive2 floating type constructor
+    // provided by the Alive2 version in ALIVE2_ROOT.
+    std::string N = "f" + std::to_string(Width);
+    std::string N1 = "f" + std::to_string(Width);
+    auto It = TypeCache.find(N);
+    if (It == TypeCache.end()) {
+        TypeCache[N] = new IR::FloatType(
+                          std::move(N1), IR::FloatType::Float);
+    }
+
+    return *TypeCache[N];
+  }
+
+  if (Width == 64) {
+    // Use the exact Alive2 floating type constructor.
+    std::string N = "d" + std::to_string(Width);
+    std::string N1 = "d" + std::to_string(Width);
+    auto It = TypeCache.find(N);
+    if (It == TypeCache.end()) {
+        TypeCache[N] = new IR::FloatType(
+                          std::move(N1), IR::FloatType::Double);
+    }
+
+    return *TypeCache[N];
+  }
+
+  llvm_unreachable("unsupported FP type");
 }
 
-IR::Type &souper::AliveDriver::getOverflowType(int Width) {
+IR::Type &souper::AliveDriver::getOverflowType(int Width, bool IsFloat) {
   std::string n = "o" + std::to_string(Width);
   if (TypeCache.find(n) == TypeCache.end()) {
-    std::vector<IR::Type *> Types = {&getType(Width), &getType(1)};
+    std::vector<IR::Type *> Types = {&getType(Width, IsFloat), &getType(1, IsFloat)};
     std::vector<bool> Padding = {false, false};
     TypeCache[n] = new IR::StructType(std::move(n),std::move(Types),
                                       std::move(Padding));
