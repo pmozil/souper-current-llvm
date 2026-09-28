@@ -1503,3 +1503,14 @@ std::vector<Block *> souper::getBlocksFromPhis(Inst *I) {
 
   return Result;
 }
+
+bool souper::containsFloat(const Inst *Root) {
+  std::set<const Inst *> Visited;
+  std::function<bool(const Inst *)> Visit = [&](const Inst *I) -> bool {
+    if (!Visited.insert(I).second) return false;
+    if (I->IsFloat) return true;
+    for (Inst *Op : I->Ops) if (Visit(Op)) return true;
+    return false;
+  };
+  return Visit(Root);
+}

@@ -486,7 +486,7 @@ public:
                           InstMapping Mapping, bool &IsValid,
                           std::vector<std::pair<Inst *, llvm::APInt>> *Model)
   override {
-    if (UseAlive) {
+    if (UseAlive || containsFloat(Mapping.LHS) || containsFloat(Mapping.RHS)) {
       IsValid = isTransformationValid(Mapping.LHS, Mapping.RHS, PCs, BPCs, IC);
       return std::error_code();
     }
