@@ -401,6 +401,8 @@ void separatePCs(const std::vector<InstMapping> &PCs,
 
 std::vector<Block *> getBlocksFromPhis(Inst *I);
 
+bool containsFloat(const Inst *Root);
+
 }
 
 #endif  // SOUPER_INST_INST_H

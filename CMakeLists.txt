@@ -593,35 +593,35 @@ add_executable(souper2llvm
 # add_executable(extractor_tests
 #   unittests/Extractor/ExtractorTests.cpp
 # )
-#
-# add_executable(inst_tests
-#   unittests/Inst/InstTests.cpp
-# )
-#
-# add_executable(parser_tests
-#   unittests/Parser/ParserTests.cpp
-# )
-#
-# add_executable(codegen_tests
-#   unittests/Codegen/CodegenTests.cpp
-# )
-#
-# add_executable(interpreter_tests
-#   unittests/Interpreter/InterpreterInfra.cpp
-#   unittests/Interpreter/InterpreterTests.cpp
-# )
-#
-# add_executable(bulk_tests
-#   unittests/Interpreter/InterpreterInfra.cpp
-#   utils/gen-xfer-funcs/BulkTests.cpp
-#   utils/gen-xfer-funcs/Verification.cpp
-# )
-#
-# target_include_directories(
-#   bulk_tests
-#   PUBLIC
-#   "${CMAKE_SOURCE_DIR}/unittests/Interpreter"
-# )
+
+add_executable(inst_tests
+  unittests/Inst/InstTests.cpp
+)
+
+add_executable(parser_tests
+  unittests/Parser/ParserTests.cpp
+)
+
+add_executable(codegen_tests
+  unittests/Codegen/CodegenTests.cpp
+)
+
+add_executable(interpreter_tests
+  unittests/Interpreter/InterpreterInfra.cpp
+  unittests/Interpreter/InterpreterTests.cpp
+)
+
+add_executable(bulk_tests
+  unittests/Interpreter/InterpreterInfra.cpp
+  utils/gen-xfer-funcs/BulkTests.cpp
+  utils/gen-xfer-funcs/Verification.cpp
+)
+
+target_include_directories(
+  bulk_tests
+  PUBLIC
+  "${CMAKE_SOURCE_DIR}/unittests/Interpreter"
+)
 
 
 # ============================================================================
@@ -895,47 +895,47 @@ target_link_libraries(
 #   ${ALIVE_LIBRARY}
 # )
 #
-# target_link_libraries(
-#   inst_tests
-#   souperInfer
-#   souperPass
-#   souperInst
-#   souperExtractor
-#   ${GTEST_LIBS}
-#   ${ALIVE_LIBRARY}
-# )
-#
-# target_link_libraries(
-#   parser_tests
-#   souperParser
-#   ${GTEST_LIBS}
-#   ${ALIVE_LIBRARY}
-# )
-#
-# target_link_libraries(
-#   codegen_tests
-#   souperCodegen
-#   souperInst
-#   ${GTEST_LIBS}
-#   ${ALIVE_LIBRARY}
-# )
-#
-# target_link_libraries(
-#   interpreter_tests
-#   souperInfer
-#   souperInst
-#   ${GTEST_LIBS}
-#   ${ALIVE_LIBRARY}
-# )
-#
-# target_link_libraries(
-#   bulk_tests
-#   souperInfer
-#   souperInst
-#   ${GTEST_LIBS}
-#   ${ALIVE_LIBRARY}
-#   ${Z3_LIBRARY}
-# )
+target_link_libraries(
+  inst_tests
+  souperInfer
+  souperPass
+  souperInst
+  souperExtractor
+  ${GTEST_LIBS}
+  ${ALIVE_LIBRARY}
+)
+
+target_link_libraries(
+  parser_tests
+  souperParser
+  ${GTEST_LIBS}
+  ${ALIVE_LIBRARY}
+)
+
+target_link_libraries(
+  codegen_tests
+  souperCodegen
+  souperInst
+  ${GTEST_LIBS}
+  ${ALIVE_LIBRARY}
+)
+
+target_link_libraries(
+  interpreter_tests
+  souperInfer
+  souperInst
+  ${GTEST_LIBS}
+  ${ALIVE_LIBRARY}
+)
+
+target_link_libraries(
+  bulk_tests
+  souperInfer
+  souperInst
+  ${GTEST_LIBS}
+  ${ALIVE_LIBRARY}
+  ${Z3_LIBRARY}
+)
 
 
 # ============================================================================
@@ -989,8 +989,8 @@ add_custom_target(check
   COMMAND ${CMAKE_BINARY_DIR}/run_lit
   DEPENDS
     # extractor_tests
-    # inst_tests
-    # parser-test
+    inst_tests
+    parser-test
     # parser_tests
     profileRuntime
     souper

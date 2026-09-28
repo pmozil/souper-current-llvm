@@ -527,9 +527,10 @@ namespace souper {
     case Inst::Mul:
     case Inst::MulNSW:
     case Inst::MulNUW:
-    case Inst::MulNW:
+    case Inst::MulNW: {
       Result = BinaryTransferFunctionsKB::mul(KB0, KB1);
       break;
+    }
     case Inst::UDiv:
       Result = BinaryTransferFunctionsKB::udiv(KB0, KB1);
       break;
@@ -1026,10 +1027,16 @@ namespace souper {
       case Inst::AddNW:
       case Inst::SubNSW:
       case Inst::SubNUW:
-      case Inst::SubNW:
-        if (RB0 == 0 && RB1 == 0)
+      case Inst::SubNW: {
+        if (RB0 == 0 && RB1 == 0) {
           Result = AllZeroes;
+        }
+
+        if (I->K == Inst::MulNSW || I->K == Inst::MulNW) {
+          Result = llvm::APInt(1, 1);
+        }
         break;
+      }
 
       // Only log2(Width) low bits can be unrestricted
       case Inst::Ctlz:

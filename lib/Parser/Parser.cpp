@@ -672,10 +672,6 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
     llvm::report_fatal_error("unhandled");
   }
 
-  if (Inst::isCmp(IK)) {
-    Width = 1;
-  }
-
   if (MinOps == MaxOps && Ops.size() != MinOps) {
     ErrStr = std::string("expected ") + utostr(MinOps) + " operands, found " +
              utostr(Ops.size());
@@ -1127,6 +1123,7 @@ bool Parser::parseLine(std::string &ErrStr) {
     case Token::ValName: {
       StringRef InstName = CurTok.Name;
       unsigned InstWidth = CurTok.Width;
+      bool InstIsFloat = CurTok.IsFloat;
 
       if (Context.getInst(InstName)) {
         ErrStr = makeErrStr(std::string("%") + InstName.str() +
@@ -1354,11 +1351,11 @@ bool Parser::parseLine(std::string &ErrStr) {
         if (IK == Inst::Var)
           I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
                            NonNegative, PowOfTwo, Negative, SignBits,
-                           llvm::APInt::getAllOnes(InstWidth), 0, CurTok.IsFloat);
+                           llvm::APInt::getAllOnes(InstWidth), 0, InstIsFloat);
         else if (IK == Inst::ReservedConst)
           I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
                            NonNegative, PowOfTwo, Negative, SignBits,
-                           llvm::APInt::getAllOnes(InstWidth), ++ReservedConstCounter, CurTok.IsFloat);
+                           llvm::APInt::getAllOnes(InstWidth), ++ReservedConstCounter, InstIsFloat);
         else if (IK == Inst::ReservedInst) {
           I = IC.createHole(InstWidth);
           I->Name = InstName;

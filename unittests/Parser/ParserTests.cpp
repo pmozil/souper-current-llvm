@@ -24,7 +24,7 @@ TEST(ParserTest, Errors) {
   } Tests[] = {
       // lexing
       { "%=", "<input>:1:2: expected identifier" },
-      { "%0:j", "<input>:1:4: expected 'i'" },
+      { "%0:j", "<input>:1:4: expected 'i' or 'f'" },
       { "%0:ix", "<input>:1:5: expected integer" },
       { "%0:i0", "<input>:1:5: width must be at least 1" },
       { "0:j", "<input>:1:3: expected 'i'" },
