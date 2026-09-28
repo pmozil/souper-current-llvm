@@ -673,6 +673,7 @@ Inst *InstContext::getConst(const llvm::APInt &Val, bool isFloat) {
   llvm::FoldingSetNodeID ID;
   ID.AddInteger(Inst::Const);
   ID.AddInteger(Val.getBitWidth());
+  ID.AddInteger(isFloat);
   Val.Profile(ID);
 
   void *IP = 0;
@@ -847,6 +848,7 @@ Inst *InstContext::getInst(Inst::Kind K, unsigned Width,
   llvm::FoldingSetNodeID ID;
   ID.AddInteger(K);
   ID.AddInteger(Width);
+  ID.AddInteger(isFloat);
   for (auto O : *InstOps)
     ID.AddPointer(O);
   if (!DemandedBits.isAllOnes())
@@ -1374,7 +1376,7 @@ Inst *souper::getInstCopy(Inst *I, InstContext &IC,
             x.getBitWidth() << " and value " << x << "\n";
           */
         }
-        Copy = IC.getConst(it->second);
+        Copy = IC.getConst(it->second, I->IsFloat);
       }
     }
     if (!Copy) {
@@ -1383,7 +1385,7 @@ Inst *souper::getInstCopy(Inst *I, InstContext &IC,
                             I->KnownOnes, I->NonZero, I->NonNegative,
                             I->PowOfTwo, I->Negative, I->NumSignBits,
                             I->DemandedBits,
-                            I->SynthesisConstID);
+                            I->SynthesisConstID, I->IsFloat);
       else {
         Copy = I;
       }
@@ -1403,7 +1405,7 @@ Inst *souper::getInstCopy(Inst *I, InstContext &IC,
   } else if (I->K == Inst::Const || I->K == Inst::UntypedConst) {
     Copy = I;
   } else {
-    Copy = IC.getInst(I->K, I->Width, Ops, I->DemandedBits, I->Available);
+    Copy = IC.getInst(I->K, I->Width, Ops, I->DemandedBits, I->Available, I->IsFloat);
   }
   assert(Copy);
   InstCache[I] = Copy;
@@ -1433,14 +1435,14 @@ Inst *souper::instJoin(Inst *I, Inst *EmptyInst, Inst *NewInst,
                           I->KnownOnes, I->NonZero, I->NonNegative,
                           I->PowOfTwo, I->Negative, I->NumSignBits,
                           I->DemandedBits,
-                          I->SynthesisConstID);
+                          I->SynthesisConstID, I->IsFloat);
     } else {
       Copy = I;
     }
   } else if (I->K == Inst::Const || I->K == Inst::UntypedConst) {
     Copy = I;
   } else {
-    Copy = IC.getInst(I->K, I->Width, Ops);
+    Copy = IC.getInst(I->K, I->Width, Ops, true, I->IsFloat);
   }
 
   assert(Copy);

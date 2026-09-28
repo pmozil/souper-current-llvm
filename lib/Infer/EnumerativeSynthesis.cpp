@@ -14,6 +14,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "souper/Infer/AliveDriver.h"
 #include "souper/Infer/ConstantSynthesis.h"
@@ -73,6 +74,8 @@ static const std::vector<Inst::Kind> FloatBinaryOperators = {
   Inst::FDiv,
   Inst::FRem,
 };
+
+static const std::vector<Inst::Kind> FloatTernaryOperators = { Inst::Select };
 
 static const std::vector<Inst::Kind> FloatCompareOperators = {
   Inst::FCmpOEQ,
@@ -172,22 +175,34 @@ static bool sameType(const Inst *A, const Inst *B) {
 // experiment with synthesizing at reduced bitwidth, then expanding the result
 // aggressively avoid calling into the solver
 
-void addGuess(Inst *RHS, unsigned TargetWidth, InstContext &IC, int MaxCost,
+void addGuess(Inst *RHS, unsigned TargetWidth, bool TargetIsFloat,
+              InstContext &IC, int MaxCost,
               std::vector<Inst *> &Guesses, int &TooExpensive) {
-  if (TargetWidth > RHS->Width) {
-    auto NSExt = IC.getInst(Inst::SExt, TargetWidth, { RHS });
-    auto NZExt = IC.getInst(Inst::ZExt, TargetWidth, { RHS });
-    addGuess(NSExt, TargetWidth, IC, MaxCost, Guesses, TooExpensive);
-    addGuess(NZExt, TargetWidth, IC, MaxCost, Guesses, TooExpensive);
+  if (RHS->IsFloat != TargetIsFloat)      // no implicit int<->float guesses
+    return;
+  if (TargetIsFloat) {
+    auto Ok = [](unsigned W) { return W == 32 || W == 64; };
+    if (!Ok(TargetWidth) || !Ok(RHS->Width)) return;
+    if (TargetWidth != RHS->Width) {
+      auto K = TargetWidth > RHS->Width ? Inst::FPExt : Inst::FPTrunc;
+      addGuess(IC.getInst(K, TargetWidth, {RHS}, true, /*isFloat=*/true),
+               TargetWidth, true, IC, MaxCost, Guesses, TooExpensive);
+      return;
+    }
+  } else if (TargetWidth > RHS->Width) {
+    addGuess(IC.getInst(Inst::SExt, TargetWidth, {RHS}), TargetWidth, false, IC, MaxCost, Guesses, TooExpensive);
+    addGuess(IC.getInst(Inst::ZExt, TargetWidth, {RHS}), TargetWidth, false, IC, MaxCost, Guesses, TooExpensive);
+    return;
   } else if (TargetWidth < RHS->Width) {
-    auto NTrunc = IC.getInst(Inst::Trunc, TargetWidth, { RHS });
-    addGuess(NTrunc, TargetWidth, IC, MaxCost, Guesses, TooExpensive);
-  } else {
-    if (IgnoreCost || souper::cost(RHS) < MaxCost)
-      Guesses.push_back(RHS);
-    else
-      TooExpensive++;
+    addGuess(IC.getInst(Inst::Trunc, TargetWidth, {RHS}), TargetWidth, false, IC, MaxCost, Guesses, TooExpensive);
+    return;
   }
+  if (IgnoreCost || souper::cost(RHS) < MaxCost) Guesses.push_back(RHS);
+  else TooExpensive++;
+}
+void addGuess(Inst *RHS, unsigned W, InstContext &IC, int MaxCost,
+              std::vector<Inst *> &G, int &TE) {
+  addGuess(RHS, W, /*TargetIsFloat=*/false, IC, MaxCost, G, TE);
 }
 
 // Does a short-circuiting AND operation
@@ -219,7 +234,7 @@ void sortGuesses(Container &Guesses) {
 using CallbackType = std::function<bool(Inst *)>;
 
 bool getGuesses(const std::set<Inst *> &Inputs,
-                int Width, int LHSCost,
+                int Width, bool IsFloat, int LHSCost,
                 InstContext &IC, Inst *PrevInst, Inst *PrevSlot,
                 int &TooExpensive,
                 PruneFunc prune, CallbackType Generate) {
@@ -247,14 +262,15 @@ bool getGuesses(const std::set<Inst *> &Inputs,
 
   // Conversion Operators
   for (auto Comp : Comps)
-    if (Comp->Width != Width)
-      addGuess(Comp, Width, IC, LHSCost, PartialGuesses, TooExpensive);
+    if (Comp->Width != Width || Comp->IsFloat != IsFloat)
+      addGuess(Comp, Width, IsFloat, IC, LHSCost, PartialGuesses, TooExpensive);
 
   Inst *I1 = IC.getReservedInst();
   Comps.push_back(I1);
 
   // Unary Operators
-  for (auto K : UnaryOperators) {
+  const auto &UnaryOps = IsFloat ? FloatUnaryOperators : UnaryOperators;
+  for (auto K : UnaryOps) {
     if (std::find(unaryExclList.begin(), unaryExclList.end(), K) != unaryExclList.end())
       continue;
 
@@ -266,21 +282,21 @@ bool getGuesses(const std::set<Inst *> &Inputs,
         continue;
 
       if (Comp->K == Inst::ReservedInst) {
-        auto V = IC.createHole(Width);
-        auto N = IC.getInst(K, Width, { V });
+        auto V = IC.createHole(Width, IsFloat);
+        auto N = IC.getInst(K, Width, { V }, true, IsFloat);
         addGuess(N, Width, IC, LHSCost, PartialGuesses, TooExpensive);
         continue;
       }
 
-      if (Comp->Width != Width)
+      if (Comp->Width != Width || Comp->IsFloat != IsFloat)
         continue;
 
       // Prune: unary operation on constant
       if (Comp->K == Inst::ReservedConst)
         continue;
 
-      auto N = IC.getInst(K, Width, { Comp });
-      addGuess(N, Width, IC, LHSCost, PartialGuesses, TooExpensive);
+      auto N = IC.getInst(K, Width, { Comp }, true, IsFloat);
+      addGuess(N, Width, IsFloat, IC, LHSCost, PartialGuesses, TooExpensive);
     }
   }
 
@@ -290,7 +306,16 @@ bool getGuesses(const std::set<Inst *> &Inputs,
   Inst *I2 = IC.getReservedInst();
   Comps.push_back(I2);
 
-  for (auto K : BinaryOperators) {
+  std::vector<Inst::Kind> BinaryOps;
+  if (IsFloat) BinaryOps = FloatBinaryOperators;
+  else {
+    BinaryOps = BinaryOperators;
+    if (Width == 1)
+      BinaryOps.insert(BinaryOps.end(), FloatCompareOperators.begin(),
+                       FloatCompareOperators.end());
+  }
+  for (auto K : BinaryOps) {
+    const bool FPKind = Inst::isFloatKind(K);
 
     // PRUNE: i1 is a special case for a number of operators
     if (Width == 1 &&
@@ -310,6 +335,8 @@ bool getGuesses(const std::set<Inst *> &Inputs,
     }
 
     for (auto I = Comps.begin(); I != Comps.end(); ++I) {
+      if (FPKind && (*I)->K == Inst::ReservedConst) continue;
+
       // Prune: only one of (mul x, C), (mul C, x) is allowed
       if ((Inst::isCommutative(K) || Inst::isOverflowIntrinsicMain(K) ||
            Inst::isOverflowIntrinsicSub(K)) && (*I)->K == Inst::ReservedConst)
@@ -324,6 +351,7 @@ bool getGuesses(const std::set<Inst *> &Inputs,
 		      Inst::isOverflowIntrinsicMain(K) ||
 		      Inst::isOverflowIntrinsicSub(K)) ? I : Comps.begin();
       for (auto J = Start; J != Comps.end(); ++J) {
+        if (FPKind && (*J)->K == Inst::ReservedConst) continue;
         // Prune: I2 should only be the second argument
         if ((*J)->K == Inst::ReservedInst && (*J) != I2)
           continue;
@@ -331,14 +359,13 @@ bool getGuesses(const std::set<Inst *> &Inputs,
         // PRUNE: never useful to cmp, sub, and, or, xor, div, rem,
         // usub.sat, ssub.sat, ashr, lshr a value against itself
         // Also do it for sub.overflow -- no sense to check for overflow when results = 0
-        if ((*I == *J) && (Inst::isCmp(K) || K == Inst::And || K == Inst::Or ||
+        if ((*I == *J) && ((Inst::isCmp(K) && !FPKind) || K == Inst::And || K == Inst::Or ||
                            K == Inst::Xor || K == Inst::Sub || K == Inst::UDiv ||
                            K == Inst::SDiv || K == Inst::SRem || K == Inst::URem ||
                            K == Inst::USubSat || K == Inst::SSubSat ||
                            K == Inst::AShr || K == Inst::LShr || K == Inst::SSubWithOverflow ||
                            K == Inst::USubWithOverflow || K == Inst::SSubO || K == Inst::USubO))
           continue;
-
         // PRUNE: never operate on two constants
         if ((*I)->K == Inst::ReservedConst && (*J)->K == Inst::ReservedConst)
           continue;
@@ -361,7 +388,7 @@ bool getGuesses(const std::set<Inst *> &Inputs,
               V1 = IC.createSynthesisConstant((*J)->Width, (*I)->SynthesisConstID);
             } else if ((*I)->K == Inst::ReservedInst) {
               // (cmp hole, comp)
-              V1 = IC.createHole((*J)->Width);
+              V1 = IC.createHole((*J)->Width, (*J)->IsFloat);
             }
           } else {
             V1 = *I;
@@ -373,7 +400,7 @@ bool getGuesses(const std::set<Inst *> &Inputs,
               V2 = IC.createSynthesisConstant((*I)->Width, (*J)->SynthesisConstID);
             } else if ((*J)->K == Inst::ReservedInst) {
               // (cmp comp, hole)
-              V2 = IC.createHole((*I)->Width);
+              V2 = IC.createHole((*I)->Width, (*I)->IsFloat);
             }
           } else {
             V2 = *J;
@@ -384,7 +411,7 @@ bool getGuesses(const std::set<Inst *> &Inputs,
             V1 = IC.createSynthesisConstant(Width, (*I)->SynthesisConstID);
           } else if ((*I)->K == Inst::ReservedInst) {
             // (binop hole, comp)
-            V1 = IC.createHole(Width);
+            V1 = IC.createHole(Width, IsFloat);
           } else {
             V1 = *I;
           }
@@ -394,14 +421,16 @@ bool getGuesses(const std::set<Inst *> &Inputs,
             V2 = IC.createSynthesisConstant(Width, (*J)->SynthesisConstID);
           } else if ((*J)->K == Inst::ReservedInst) {
             // (binop comp, hole)
-            V2 = IC.createHole(Width);
+            V2 = IC.createHole(Width, IsFloat);
           } else {
             V2 = *J;
           }
         }
 
-        if (V1->Width != V2->Width)
-          continue;
+        if (!sameType(V1, V2))
+            continue;
+        if (V1->IsFloat != FPKind)
+            continue;
 
         if (!(Inst::isCmp(K) || Inst::isOverflowIntrinsicSub(K)) && V1->Width != Width)
           continue;
@@ -425,10 +454,11 @@ bool getGuesses(const std::set<Inst *> &Inputs,
           N = IC.getInst(Inst::ExtractValue, 1, {Orig, IC.getConst(llvm::APInt(32, 1))});
         }
         else {
-          N = IC.getInst(K, Inst::isCmp(K) ? 1 : Width, {V1, V2});
+          const bool ResIsFloat = FPKind && !Inst::isCmp(K);
+          N = IC.getInst(K, Inst::isCmp(K) ? 1 : Width, {V1, V2}, true, ResIsFloat);
         }
 
-        addGuess(N, Width, IC, LHSCost, PartialGuesses, TooExpensive);
+        addGuess(N, Width, IsFloat, IC, LHSCost, PartialGuesses, TooExpensive);
       }
     }
   }
@@ -442,7 +472,8 @@ bool getGuesses(const std::set<Inst *> &Inputs,
   Inst *I3 = IC.getReservedInst();
   Comps.push_back(I3);
 
-  for (auto Op : TernaryOperators) {
+  const auto &TernaryOps = IsFloat ? FloatTernaryOperators : TernaryOperators;
+  for (auto Op : TernaryOps) {
     for (auto I : Comps) {
       if (I->K == Inst::ReservedInst && I != I1)
         continue;
@@ -467,12 +498,17 @@ bool getGuesses(const std::set<Inst *> &Inputs,
         V1 = I;
       }
 
+      if (V1->IsFloat)
+          continue;
+
       if (Op == Inst::Select && V1->Width != 1)
         continue;
       if (Op != Inst::Select && V1->Width != Width)
         continue;
 
       for (auto J : Comps) {
+        if (IsFloat && J->K == Inst::ReservedConst)
+            continue;
         if (J->K == Inst::ReservedInst && J != I2)
           continue;
         if (J->K == Inst::ReservedConst && J != C2)
@@ -482,15 +518,17 @@ bool getGuesses(const std::set<Inst *> &Inputs,
         if (J->K == Inst::ReservedConst) {
           V2 = IC.createSynthesisConstant(Width, J->SynthesisConstID);
         } else if (J->K == Inst::ReservedInst) {
-          V2 = IC.createHole(Width);
+          V2 = IC.createHole(Width, IsFloat);
         } else {
           V2 = J;
         }
 
-        if (V2->Width != Width)
+        if (V2->Width != Width || V2->IsFloat != IsFloat)
           continue;
 
         for (auto K : Comps) {
+          if (IsFloat && K->K == Inst::ReservedConst)
+              continue;
           if (K->K == Inst::ReservedInst && K != I3)
             continue;
           if (K->K == Inst::ReservedConst && K != C3)
@@ -509,16 +547,16 @@ bool getGuesses(const std::set<Inst *> &Inputs,
           if (K->K == Inst::ReservedConst) {
             V3 = IC.createSynthesisConstant(Width, K->SynthesisConstID);
           } else if (K->K == Inst::ReservedInst) {
-            V3 = IC.createHole(Width);
+            V3 = IC.createHole(Width, IsFloat);
           } else {
             V3 = K;
           }
 
-          if (V2->Width != V3->Width)
+          if (!sameType(V2, V3))
             continue;
 
-          auto N = IC.getInst(Op, Width, {V1, V2, V3});
-          addGuess(N, Width, IC, LHSCost, PartialGuesses, TooExpensive);
+          auto N = IC.getInst(Op, Width, {V1, V2, V3}, true, IsFloat);
+          addGuess(N, Width, IsFloat, IC, LHSCost, PartialGuesses, TooExpensive);
         }
       }
     }
@@ -549,7 +587,7 @@ bool getGuesses(const std::set<Inst *> &Inputs,
       std::vector<Inst *> empty;
       if (prune(JoinedGuess, empty)) {
         std::vector<Inst *> ConcreteTypedGuesses;
-        addGuess(JoinedGuess, JoinedGuess->Width, IC, LHSCost, ConcreteTypedGuesses, TooExpensive);
+        addGuess(JoinedGuess, JoinedGuess->Width, JoinedGuess->IsFloat, IC, LHSCost, ConcreteTypedGuesses, TooExpensive);
         for (auto &&Guess : ConcreteTypedGuesses) {
           if (!Generate(Guess)) {
             return false;
@@ -564,6 +602,7 @@ bool getGuesses(const std::set<Inst *> &Inputs,
     if (prune(JoinedGuess, CurrSlots)) {
       // TODO: replace this naive hole selection with some better algorithms
       if (!getGuesses(Inputs, CurrSlots.front()->Width,
+                      CurrSlots.front()->IsFloat,
                       LHSCost, IC, JoinedGuess,
                       CurrSlots.front(), TooExpensive, prune, Generate)) {
         return false;
@@ -606,6 +645,9 @@ bool exceeds64Bits(const Inst *I, std::set<const Inst *> &Visited) {
 }
 
 bool canDifferInLSB(SynthesisContext &SC, Inst *RHSGuess) {
+  if (SC.LHS->IsFloat || RHSGuess->IsFloat)
+      return false;
+
   Inst *LHSOne = SC.IC.getConst(llvm::APInt(SC.LHS->Width, 1));
   Inst *NewLHS = SC.IC.getInst(Inst::And, SC.LHS->Width, {SC.LHS, LHSOne});
   Inst *RHSOne = SC.IC.getConst(llvm::APInt(RHSGuess->Width, 1));
@@ -840,7 +882,11 @@ std::error_code verify(SynthesisContext &SC, std::vector<Inst *> &RHSs,
   if (SkipSolver || Guesses.empty())
     return EC;
 
-  bool NeedsAlive = UseAlive || containsFloat(SC.LHS);
+  bool NeedsAlive = UseAlive || containsFloat(SC.LHS) ||
+  llvm::any_of(SC.PCs, [](const InstMapping &P){ return containsFloat(P.LHS) || containsFloat(P.RHS); }) ||
+  llvm::any_of(SC.BPCs, [](const BlockPCMapping &B){ return containsFloat(B.PC.LHS) || containsFloat(B.PC.RHS); }) ||
+  llvm::any_of(Guesses, [](const Inst *G){ return containsFloat(G); });
+
   return NeedsAlive ? synthesizeWithAlive(SC, RHSs, Guesses) :
                     synthesizeWithKLEE(SC, RHSs, Guesses);
 }
@@ -888,7 +934,7 @@ EnumerativeSynthesis::synthesize(SMTLIBSolver *SMTSolver,
   std::vector<PruneFunc> PruneFuncs = { [&Visited](Inst *I, std::vector<Inst*> &ReservedInsts)  {
     return CountPrune(I, ReservedInsts, Visited);
   }};
-  if (EnableDataflowPruning) {
+  if (EnableDataflowPruning && !containsFloat(SC.LHS)) {
     DataflowPruning.init();
     PruneFuncs.push_back(DataflowPruning.getPruneFunc());
   }
@@ -909,14 +955,14 @@ EnumerativeSynthesis::synthesize(SMTLIBSolver *SMTSolver,
 
   // add constant guess
   // TODO add a poison/undef guess
-  if (!(OnlyInferI1 && SC.LHS->Width > 1))
+  if (!(OnlyInferI1 && SC.LHS->Width > 1) && !SC.LHS->IsFloat)
     Guesses.push_back(IC.createSynthesisConstant(SC.LHS->Width, 1));
 
   // add nop guesses
   if (!OnlyInferI1 && !OnlyInferIN) {
     for (auto I : Cands) {
-      if (I->Width == SC.LHS->Width)
-        addGuess(I, SC.LHS->Width, SC.IC, LHSCost, Guesses, TooExpensive);
+      if (sameType(I, SC.LHS))
+        addGuess(I, SC.LHS->Width, SC.LHS->IsFloat, SC.IC, LHSCost, Guesses, TooExpensive);
     }
   }
 
@@ -924,7 +970,7 @@ EnumerativeSynthesis::synthesize(SMTLIBSolver *SMTSolver,
     llvm::errs() << "There are " << Guesses.size() << " guesses before enumeration\n";
 
   if (MaxNumInstructions > 0)
-    getGuesses(Cands, SC.LHS->Width,
+    getGuesses(Cands, SC.LHS->Width, SC.LHS->IsFloat,
                LHSCost, SC.IC, nullptr, nullptr, TooExpensive, PruneCallback, Generate);
 
   if (DebugLevel > 1) {

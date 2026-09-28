@@ -1354,11 +1354,11 @@ bool Parser::parseLine(std::string &ErrStr) {
         if (IK == Inst::Var)
           I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
                            NonNegative, PowOfTwo, Negative, SignBits,
-                           llvm::APInt::getAllOnes(InstWidth), 0);
+                           llvm::APInt::getAllOnes(InstWidth), 0, CurTok.IsFloat);
         else if (IK == Inst::ReservedConst)
           I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
                            NonNegative, PowOfTwo, Negative, SignBits,
-                           llvm::APInt::getAllOnes(InstWidth), ++ReservedConstCounter);
+                           llvm::APInt::getAllOnes(InstWidth), ++ReservedConstCounter, CurTok.IsFloat);
         else if (IK == Inst::ReservedInst) {
           I = IC.createHole(InstWidth);
           I->Name = InstName;
