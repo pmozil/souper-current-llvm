@@ -19,7 +19,7 @@
 #include "souper/Extractor/Candidates.h"
 #include "souper/Extractor/ExprBuilder.h"
 #include <memory>
-#include "llvm-gtest/gtest/gtest.h"
+#include "gtest/gtest.h"
 
 using namespace llvm;
 using namespace souper;

@@ -590,9 +590,9 @@ add_executable(souper2llvm
 # Unit tests
 # ============================================================================
 
-# add_executable(extractor_tests
-#   unittests/Extractor/ExtractorTests.cpp
-# )
+add_executable(extractor_tests
+  unittests/Extractor/ExtractorTests.cpp
+)
 
 add_executable(inst_tests
   unittests/Inst/InstTests.cpp
@@ -887,14 +887,14 @@ target_link_libraries(
 # Unit test linking
 # ============================================================================
 
-# target_link_libraries(
-#   extractor_tests
-#   souperExtractor
-#   souperParser
-#   ${GTEST_LIBS}
-#   ${ALIVE_LIBRARY}
-# )
-#
+target_link_libraries(
+  extractor_tests
+  souperExtractor
+  souperParser
+  ${GTEST_LIBS}
+  ${ALIVE_LIBRARY}
+)
+
 target_link_libraries(
   inst_tests
   souperInfer
