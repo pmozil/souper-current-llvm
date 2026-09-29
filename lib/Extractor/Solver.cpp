@@ -412,6 +412,8 @@ public:
 
     // FIXME -- it's a bit messy to have this custom logic here
     if (LHS->HarvestKind == HarvestType::HarvestedFromUse) {
+      if (LHS->IsFloat)
+          return EC;
       Inst *C = IC.createSynthesisConstant(LHS->Width, /*SynthesisConstID=*/1);
       if (UseAlive) {
         Inst *Ante = IC.getConst(llvm::APInt(1, true));
@@ -444,6 +446,8 @@ public:
     }
 
     if (UseCegis) {
+      if (containsFloat(LHS))
+          return EC;
       InstSynthesis IS;
       Inst *RHS;
       EC = IS.synthesize(SMTSolver.get(), BPCs, PCs, LHS, RHS, IC, Timeout);

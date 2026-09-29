@@ -67,6 +67,8 @@ llvm::ConstantRange mkCR(Inst *I, size_t Low, size_t High) {
 
 bool isRangeInfeasible(Inst *C, llvm::APInt LHSV, Inst *RHS,
                        llvm::ConstantRange Range, ConcreteInterpreter &I) {
+  if (C->IsFloat)
+      return false;
   std::unordered_map<Inst *, llvm::ConstantRange> CRCache;
   CRCache.insert({C, Range});
   return !ConstantRangeAnalysis(CRCache)

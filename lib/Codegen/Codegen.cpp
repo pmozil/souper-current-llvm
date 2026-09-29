@@ -16,6 +16,7 @@
 #include "souper/Inst/Inst.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -32,6 +33,16 @@ using namespace llvm;
 
 extern unsigned DebugLevel;
 
+static llvm::Type *GetLLVMType(llvm::LLVMContext &Context, const souper::Inst *I) {
+  if (!I->IsFloat)
+    return Type::getIntNTy(Context, I->Width);
+  switch (I->Width) {
+  case 32: return Type::getFloatTy(Context);
+  case 64: return Type::getDoubleTy(Context);
+  default: report_fatal_error("Codegen: unsupported float width");
+  }
+}
+
 namespace souper {
 
 llvm::Type *Codegen::GetInstReturnType(llvm::LLVMContext &Context, Inst *I) {
@@ -45,7 +56,9 @@ llvm::Type *Codegen::GetInstReturnType(llvm::LLVMContext &Context, Inst *I) {
     return StructType::get(Context, {Type::getIntNTy(Context, I->Width - 1),
                                      Type::getInt1Ty(Context)});
   default:
-    return Type::getIntNTy(Context, I->Width);
+    if (Inst::isCmp(I->K))
+        return Type::getInt1Ty(Context);
+    return GetLLVMType(Context, I);
   }
 }
 
@@ -60,10 +73,15 @@ llvm::Value *Codegen::getValue(Inst *I) {
 
   Type *T;
   if (I->K != Inst::ExtractValue) // it depends on the second value then
-    T = Type::getIntNTy(Context, I->Width);
+    T = GetLLVMType(Context, I);
 
-  if (I->K == Inst::Const)
-    return ConstantInt::get(T, I->Val);
+  if (I->K == Inst::Const) {
+    if (!I->IsFloat)
+      return ConstantInt::get(T, I->Val);
+    const llvm::fltSemantics &Sem =
+        I->Width == 32 ? llvm::APFloat::IEEEsingle() : llvm::APFloat::IEEEdouble();
+    return ConstantFP::get(Context, llvm::APFloat(Sem, I->Val));
+  }
 
   if (ReplacedValues.find(I) != ReplacedValues.end())
     return ReplacedValues.at(I);
@@ -146,6 +164,20 @@ llvm::Value *Codegen::getValue(Inst *I) {
     }
     case Inst::Freeze:
       return Builder.CreateFreeze(V0);
+    case Inst::FNeg:
+      return Builder.CreateFNeg(V0);
+    case Inst::FPTrunc:
+      return Builder.CreateFPTrunc(V0, T);
+    case Inst::FPExt:
+      return Builder.CreateFPExt(V0, T);
+    case Inst::FPToUI:
+      return Builder.CreateFPToUI(V0, T);
+    case Inst::FPToSI:
+      return Builder.CreateFPToSI(V0, T);
+    case Inst::UIToFP:
+      return Builder.CreateUIToFP(V0, T);
+    case Inst::SIToFP:
+      return Builder.CreateSIToFP(V0, T);
     default:
       break;
     }
@@ -281,6 +313,44 @@ llvm::Value *Codegen::getValue(Inst *I) {
       return Builder.CreateCall(Intrinsic::getOrInsertDeclaration(M, Intrinsic::ssub_sat, T), {V0, V1});
     case Inst::USubSat:
       return Builder.CreateCall(Intrinsic::getOrInsertDeclaration(M, Intrinsic::usub_sat, T), {V0, V1});
+    case Inst::FAdd:
+      return Builder.CreateFAdd(V0, V1);
+    case Inst::FSub:
+      return Builder.CreateFSub(V0, V1);
+    case Inst::FMul:
+      return Builder.CreateFMul(V0, V1);
+    case Inst::FDiv:
+      return Builder.CreateFDiv(V0, V1);
+    case Inst::FRem:
+      return Builder.CreateFRem(V0, V1);
+    case Inst::FCmpOEQ:
+      return Builder.CreateFCmpOEQ(V0, V1);
+    case Inst::FCmpOGT:
+      return Builder.CreateFCmpOGT(V0, V1);
+    case Inst::FCmpOGE:
+      return Builder.CreateFCmpOGE(V0, V1);
+    case Inst::FCmpOLT:
+      return Builder.CreateFCmpOLT(V0, V1);
+    case Inst::FCmpOLE:
+      return Builder.CreateFCmpOLE(V0, V1);
+    case Inst::FCmpONE:
+      return Builder.CreateFCmpONE(V0, V1);
+    case Inst::FCmpORD:
+      return Builder.CreateFCmpORD(V0, V1);
+    case Inst::FCmpUEQ:
+      return Builder.CreateFCmpUEQ(V0, V1);
+    case Inst::FCmpUGT:
+      return Builder.CreateFCmpUGT(V0, V1);
+    case Inst::FCmpUGE:
+      return Builder.CreateFCmpUGE(V0, V1);
+    case Inst::FCmpULT:
+      return Builder.CreateFCmpULT(V0, V1);
+    case Inst::FCmpULE:
+      return Builder.CreateFCmpULE(V0, V1);
+    case Inst::FCmpUNE:
+      return Builder.CreateFCmpUNE(V0, V1);
+    case Inst::FCmpUNO:
+        return Builder.CreateFCmpUNO(V0, V1);
     default:
       break;
     }
@@ -327,7 +397,8 @@ GetInputArgumentTypes(const InstContext &IC, llvm::LLVMContext &Context, Inst *R
   ArgTypes.reserve(AllVariables.size());
   for (const Inst *const Var : AllVariables) {
     // llvm::errs() << "arg with width " << Var->Width << " and number " << Var->Number << "\n";
-    ArgTypes.emplace_back(Type::getIntNTy(Context, Var->Width));
+    // ArgTypes.emplace_back(Type::getIntNTy(Context, Var->Width));
+    ArgTypes.emplace_back(GetLLVMType(Context, Var));
   }
 
   return ArgTypes;

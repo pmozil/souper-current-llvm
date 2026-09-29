@@ -436,6 +436,90 @@ namespace souper {
       else
         return {ARG0.getHiBits(1).trunc(1)};
     }
+    case Inst::FAdd:
+    case Inst::FSub:
+    case Inst::FMul:
+    case Inst::FDiv:
+    case Inst::FRem: {
+      const llvm::fltSemantics &Sem =
+          Inst->Width == 32 ? llvm::APFloat::IEEEsingle() : llvm::APFloat::IEEEdouble();
+      llvm::APFloat A(Sem, ARG0), B(Sem, ARG1);
+      switch (Inst->K) {
+      case Inst::FAdd: A.add(B, llvm::APFloat::rmNearestTiesToEven); break;
+      case Inst::FSub: A.subtract(B, llvm::APFloat::rmNearestTiesToEven); break;
+      case Inst::FMul: A.multiply(B, llvm::APFloat::rmNearestTiesToEven); break;
+      case Inst::FDiv: A.divide(B, llvm::APFloat::rmNearestTiesToEven); break;
+      case Inst::FRem: A.mod(B); break;
+      default: break;
+      }
+      return { A.bitcastToAPInt() };
+    }
+    case Inst::FNeg: {
+      const llvm::fltSemantics &Sem =
+          Inst->Width == 32 ? llvm::APFloat::IEEEsingle() : llvm::APFloat::IEEEdouble();
+      llvm::APFloat A(Sem, ARG0);
+      A.changeSign();
+      return { A.bitcastToAPInt() };
+    }
+    case Inst::FCmpOEQ: case Inst::FCmpOGT: case Inst::FCmpOGE:
+    case Inst::FCmpOLT: case Inst::FCmpOLE: case Inst::FCmpONE: case Inst::FCmpORD:
+    case Inst::FCmpUEQ: case Inst::FCmpUGT: case Inst::FCmpUGE:
+    case Inst::FCmpULT: case Inst::FCmpULE: case Inst::FCmpUNE: case Inst::FCmpUNO: {
+      const llvm::fltSemantics &Sem =
+          Inst->Ops[0]->Width == 32 ? llvm::APFloat::IEEEsingle() : llvm::APFloat::IEEEdouble();
+      llvm::APFloat A(Sem, ARG0), B(Sem, ARG1);
+      auto Cmp = A.compare(B);   // cmpLessThan / cmpGreaterThan / cmpEqual / cmpUnordered
+      bool IsNaN = (Cmp == llvm::APFloat::cmpUnordered);
+      bool Result;
+      switch (Inst->K) {
+      case Inst::FCmpOEQ: Result = !IsNaN && Cmp == llvm::APFloat::cmpEqual; break;
+      case Inst::FCmpOGT: Result = !IsNaN && Cmp == llvm::APFloat::cmpGreaterThan; break;
+      case Inst::FCmpOGE: Result = !IsNaN && Cmp != llvm::APFloat::cmpLessThan; break;
+      case Inst::FCmpOLT: Result = !IsNaN && Cmp == llvm::APFloat::cmpLessThan; break;
+      case Inst::FCmpOLE: Result = !IsNaN && Cmp != llvm::APFloat::cmpGreaterThan; break;
+      case Inst::FCmpONE: Result = !IsNaN && Cmp != llvm::APFloat::cmpEqual; break;
+      case Inst::FCmpORD: Result = !IsNaN; break;
+      case Inst::FCmpUEQ: Result = IsNaN || Cmp == llvm::APFloat::cmpEqual; break;
+      case Inst::FCmpUGT: Result = IsNaN || Cmp == llvm::APFloat::cmpGreaterThan; break;
+      case Inst::FCmpUGE: Result = IsNaN || Cmp != llvm::APFloat::cmpLessThan; break;
+      case Inst::FCmpULT: Result = IsNaN || Cmp == llvm::APFloat::cmpLessThan; break;
+      case Inst::FCmpULE: Result = IsNaN || Cmp != llvm::APFloat::cmpGreaterThan; break;
+      case Inst::FCmpUNE: Result = IsNaN || Cmp != llvm::APFloat::cmpEqual; break;
+      case Inst::FCmpUNO: Result = IsNaN; break;
+      default: Result = false; break;
+      }
+      return { llvm::APInt(1, Result) };
+    }
+    case Inst::FPTrunc:
+    case Inst::FPExt: {
+      const llvm::fltSemantics &SrcSem =
+          Inst->Ops[0]->Width == 32 ? llvm::APFloat::IEEEsingle() : llvm::APFloat::IEEEdouble();
+      const llvm::fltSemantics &DstSem =
+          Inst->Width == 32 ? llvm::APFloat::IEEEsingle() : llvm::APFloat::IEEEdouble();
+      llvm::APFloat A(SrcSem, ARG0);
+      bool LosesInfo;
+      A.convert(DstSem, llvm::APFloat::rmNearestTiesToEven, &LosesInfo);
+      return { A.bitcastToAPInt() };
+    }
+    case Inst::SIToFP:
+    case Inst::UIToFP: {
+      const llvm::fltSemantics &Sem =
+          Inst->Width == 32 ? llvm::APFloat::IEEEsingle() : llvm::APFloat::IEEEdouble();
+      llvm::APFloat A(Sem, 0);
+      A.convertFromAPInt(ARG0, /*IsSigned=*/Inst->K == Inst::SIToFP,
+                          llvm::APFloat::rmNearestTiesToEven);
+      return { A.bitcastToAPInt() };
+    }
+    case Inst::FPToSI:
+    case Inst::FPToUI: {
+      const llvm::fltSemantics &Sem =
+          Inst->Ops[0]->Width == 32 ? llvm::APFloat::IEEEsingle() : llvm::APFloat::IEEEdouble();
+      llvm::APFloat A(Sem, ARG0);
+      bool IsExact;
+      llvm::APSInt Result(Inst->Width, Inst->K == Inst::FPToUI);
+      A.convertToInteger(Result, llvm::APFloat::rmTowardZero, &IsExact);
+      return { Result };
+    }
     case Inst::Freeze: {
       if (Args[0].K == EvalValue::ValueKind::Undef || Args[0].K == EvalValue::ValueKind::Poison) {
         return {llvm::APInt(Args[0].BitWidth,

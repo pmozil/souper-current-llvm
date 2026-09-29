@@ -244,6 +244,8 @@ Inst *getConstConstraint(Inst::Kind K, unsigned OpNum, Inst *C,
     return IC.getConst(llvm::APInt(1, true));
 
   default:
+    if (Inst::isFloatKind(K))
+      return IC.getConst(llvm::APInt(1, true));
     llvm::report_fatal_error(("unmatched: " + (std::string)Inst::getKindName(K)).c_str());
   }
 }

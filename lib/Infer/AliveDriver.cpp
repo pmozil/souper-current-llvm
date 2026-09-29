@@ -270,16 +270,66 @@ struct ReturnLHSRAII {
 }
 
 std::map<souper::Inst *, llvm::APInt>
-performCegisFirstQuery(tools::Transform &t,
+souper::AliveDriver::performCegisFirstQuery(tools::Transform &t,
                        std::map<std::string, souper::Inst *> &SouperConsts,
                        smt::expr &TriedExpr) {
-  // Removed because implementation was bit-rotting.
-  // The combination of the options requiring this is
-  // not currently used.
-  // TODO implement either this or the solver based synthesis
-  // before removing KLEE backend
-  llvm::errs() << "CEGIS constant synthesis through alive unimplemented.";
-  return {};
+  try {
+    tools::TransformVerify tv(t, /*check_each_var=*/false);
+    auto StatePair = tv.exec();
+    auto &SrcState = *StatePair.first;
+    auto &TgtState = *StatePair.second;
+
+    auto SrcRet = SrcState.returnVal();
+    auto TgtRet = TgtState.returnVal();
+
+    // Does there exist an assignment to the program inputs AND the reserved
+    // constants (both are free Z3 variables at this point) making src and
+    // tgt disagree, that we haven't already excluded? We deliberately don't
+    // try to get poison/UB refinement exactly right here -- see note below.
+    // This only proposes a candidate; verify() is the real check.
+    smt::expr Disagree =
+        SrcRet.domain() && TgtRet.domain() &&
+        SrcRet.return_domain && TgtRet.return_domain &&
+        SrcRet.val.non_poison && TgtRet.val.non_poison &&
+        (SrcRet.val.value != TgtRet.val.value);
+
+    smt::Solver S;
+    S.add(Disagree);
+    S.add(TriedExpr);   // TriedExpr starts as `true` and narrows each round
+
+    auto Result = S.check("cegis-first-query");
+    if (!Result.isSat())
+      return {};   // nothing left to try: either done, or no constant works
+
+    const auto &M = Result.getModel();
+
+    std::map<souper::Inst *, llvm::APInt> ConstMap;
+    smt::expr ThisPoint(true);
+    for (auto &[Name, C] : SouperConsts) {
+      auto It = RExprCache.find(C);
+      if (It == RExprCache.end())
+        continue;
+      smt::expr CVar = TgtState[*It->second].value;
+
+      if (C->Width > 64) {
+        if (DebugLevel > 2)
+          llvm::errs() << "CEGIS: constant width > 64 not supported, skipping\n";
+        return {};
+      }
+
+      uint64_t Bits = C->IsFloat ? M.getUInt(CVar.float2BV()) : M.getUInt(CVar);
+      ConstMap[C] = llvm::APInt(C->Width, Bits);
+      ThisPoint = ThisPoint && (CVar == M[CVar]);
+    }
+
+    TriedExpr = TriedExpr && !ThisPoint;
+    return ConstMap;
+  } catch (util::AliveException &E) {
+    if (DebugLevel > 2)
+      llvm::errs() << "AliveDriver CEGIS: " << E.msg << "\n";
+    return {};
+  }
+
 }
 
 std::map<souper::Inst *, llvm::APInt>

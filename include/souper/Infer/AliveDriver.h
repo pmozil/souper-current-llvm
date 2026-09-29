@@ -19,6 +19,7 @@
 #include "souper/Inst/Inst.h"
 #include "alive2/ir/function.h"
 #include "alive2/smt/smt.h"
+#include "alive2/tools/transform.h"
 
 #include <unordered_map>
 #include <optional>
@@ -67,6 +68,11 @@ private:
 
   InstContext &IC;
   smt::smt_initializer smt_init;
+
+  std::map<souper::Inst *, llvm::APInt>
+  performCegisFirstQuery(tools::Transform &t,
+                         std::map<std::string, souper::Inst *> &SouperConsts,
+                         smt::expr &TriedExpr);
 };
 
 bool isTransformationValid(Inst* LHS, Inst* RHS, const std::vector<InstMapping> &PCs,

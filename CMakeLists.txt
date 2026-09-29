@@ -1,6 +1,11 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.15)
 project(Souper)
+
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Strip LLVM's -fno-exceptions and enforce -fexceptions for Z3
+string(REPLACE "-fno-exceptions" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
 
 set(CMAKE_MACOSX_RPATH NEW)
 
@@ -70,7 +75,7 @@ execute_process(
 
 set(
   LLVM_CXXFLAGS
-  "${LLVM_CXXFLAGS} -fno-exceptions -fno-rtti -Wno-deprecated-enum-enum-conversion"
+  "${LLVM_CXXFLAGS} -fno-rtti -Wno-deprecated-enum-enum-conversion"
 )
 
 execute_process(
@@ -1118,7 +1123,3 @@ configure_file(
 # ============================================================================
 
 add_subdirectory(docs)
-
-# Strip LLVM's -fno-exceptions and enforce -fexceptions for Z3
-string(REPLACE "-fno-exceptions" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
