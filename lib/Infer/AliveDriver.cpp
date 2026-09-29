@@ -287,15 +287,15 @@ souper::AliveDriver::performCegisFirstQuery(tools::Transform &t,
     // tgt disagree, that we haven't already excluded? We deliberately don't
     // try to get poison/UB refinement exactly right here -- see note below.
     // This only proposes a candidate; verify() is the real check.
-    smt::expr Disagree =
+    smt::expr Agree =
         SrcRet.domain() && TgtRet.domain() &&
         SrcRet.return_domain && TgtRet.return_domain &&
         SrcRet.val.non_poison && TgtRet.val.non_poison &&
-        (SrcRet.val.value != TgtRet.val.value);
+        (SrcRet.val.value == TgtRet.val.value);
 
     smt::Solver S;
-    S.add(Disagree);
-    S.add(TriedExpr);   // TriedExpr starts as `true` and narrows each round
+    S.add(Agree);
+    S.add(TriedExpr);
 
     auto Result = S.check("cegis-first-query");
     if (!Result.isSat())
@@ -383,6 +383,7 @@ souper::AliveDriver::synthesizeConstants(souper::Inst *RHS) {
   assert(!Consts.empty());
   RExprCache.clear();
   IR::Function RHSF;
+  copyInputs(RExprCache, RHSF);
   if (!translateRoot(RHS, nullptr, RHSF, RExprCache)) {
     if (DebugLevel > 2)
       llvm::errs() << "Failed to translate RHS.\n";
@@ -410,6 +411,7 @@ souper::AliveDriver::synthesizeConstantsWithCegis(souper::Inst *RHS, InstContext
 
   RExprCache.clear();
   IR::Function RHSF;
+  copyInputs(RExprCache, RHSF);
   if (!translateRoot(RHS, PreCondition, RHSF, RExprCache)) {
     if (DebugLevel > 2)
       llvm::errs() << "Failed to translate RHS.\n";
