@@ -993,10 +993,10 @@ add_library(profileRuntime STATIC
 add_custom_target(check
   COMMAND ${CMAKE_BINARY_DIR}/run_lit
   DEPENDS
-    # extractor_tests
+    extractor_tests
     inst_tests
     parser-test
-    # parser_tests
+    parser_tests
     profileRuntime
     souper
     souper-check
@@ -1005,9 +1005,9 @@ add_custom_target(check
     souper2llvm
     souperPassProfileAll
     count-insts
-    # interpreter_tests
-    # bulk_tests
-    # codegen_tests
+    interpreter_tests
+    bulk_tests
+    codegen_tests
   USES_TERMINAL
 )
 

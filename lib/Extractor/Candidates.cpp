@@ -406,13 +406,13 @@ Inst *ExprBuilder::buildHelper(Value *V) {
       case FCmpInst::FCMP_FALSE: return IC.getConst(APInt(1, 0));
       default: llvm_unreachable("bad fcmp predicate");
     }
-    return IC.getInst(K, 1, {L, R}, false);   // fcmp result is i1, same as icmp
+    return IC.getInst(K, 1, {L, R});
   } else if (auto FNeg = dyn_cast<UnaryOperator>(V)) {
     // LLVM models fneg as a UnaryOperator (opcode Instruction::FNeg)
     if (FNeg->getOpcode() != Instruction::FNeg) return makeArrayRead(V);
     Inst *Op = get(FNeg->getOperand(0));
     bool ResultIsFloat = V->getType()->isFloatingPointTy();
-    Inst *R = IC.getInst(Inst::FNeg, Op->Width, {Op}, ResultIsFloat);
+    Inst *R = IC.getInst(Inst::FNeg, Op->Width, {Op}, true, ResultIsFloat);
     return R;
   } else if (auto BO = dyn_cast<BinaryOperator>(V)) {
     if (!isa<IntegerType>(BO->getType()))

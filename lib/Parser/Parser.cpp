@@ -399,7 +399,7 @@ Inst *Parser::parseInst(std::string &ErrStr) {
     }
 
     case Token::Int: {
-      Inst *I = IC.getConst(CurTok.Val);
+      Inst *I = IC.getConst(CurTok.Val, CurTok.IsFloat);
       if (!consumeToken(ErrStr))
         return 0;
       return I;
@@ -1357,7 +1357,7 @@ bool Parser::parseLine(std::string &ErrStr) {
                            NonNegative, PowOfTwo, Negative, SignBits,
                            llvm::APInt::getAllOnes(InstWidth), ++ReservedConstCounter, InstIsFloat);
         else if (IK == Inst::ReservedInst) {
-          I = IC.createHole(InstWidth);
+          I = IC.createHole(InstWidth, InstIsFloat);
           I->Name = InstName;
         }
 
@@ -1387,7 +1387,7 @@ bool Parser::parseLine(std::string &ErrStr) {
         }
         if (!consumeToken(ErrStr)) return false;
       } else if (IK == Inst::Hole) {
-        Inst *I = IC.createHole(InstWidth);
+        Inst *I = IC.createHole(InstWidth, InstIsFloat);
         Context.setInst(InstName, I);
         return true;
       }
@@ -1470,9 +1470,12 @@ bool Parser::parseLine(std::string &ErrStr) {
                            {IC.getInst(Inst::Mul, W, Ops, /*Available=*/false),
                             IC.getInst(Inst::UMulO, 1, Ops, /*Available=*/false)});
             break;
-          default:
-            I = IC.getInst(IK, InstWidth, Ops);
+          default:  {
+            bool ResIsFloat = InstIsFloat && !Inst::isCmp(IK) &&
+                              IK != Inst::FPToUI && IK != Inst::FPToSI;
+            I = IC.getInst(IK, InstWidth, Ops, true, ResIsFloat);
             break;
+          }
         }
       }
 

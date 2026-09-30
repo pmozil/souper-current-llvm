@@ -412,10 +412,8 @@ public:
 
     // FIXME -- it's a bit messy to have this custom logic here
     if (LHS->HarvestKind == HarvestType::HarvestedFromUse) {
-      if (LHS->IsFloat)
-          return EC;
-      Inst *C = IC.createSynthesisConstant(LHS->Width, /*SynthesisConstID=*/1);
-      if (UseAlive) {
+      Inst *C = IC.createSynthesisConstant(LHS->Width, /*SynthesisConstID=*/1, LHS->IsFloat);
+      if (UseAlive || LHS->IsFloat) {
         Inst *Ante = IC.getConst(llvm::APInt(1, true));
         for (auto PC : PCs ) {
           Inst *Eq = IC.getInst(Inst::Eq, 1, {PC.LHS, PC.RHS});
