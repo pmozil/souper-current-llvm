@@ -38,13 +38,30 @@ class Codegen {
   llvm::Instruction *ReplacedInst;
   const std::map<Inst *, llvm::Value *> &ReplacedValues;
 
+  llvm::Instruction *ReplacementInsertPoint;
+
 public:
   Codegen(llvm::LLVMContext &Context_, llvm::Module *M_,
           llvm::IRBuilder<> &Builder_, llvm::DominatorTree *DT_,
           llvm::Instruction *ReplacedInst_,
           const std::map<Inst *, llvm::Value *> &ReplacedValues_)
       : Context(Context_), M(M_), Builder(Builder_), DT(DT_),
-        ReplacedInst(ReplacedInst_), ReplacedValues(ReplacedValues_) {}
+        ReplacedInst(ReplacedInst_), ReplacedValues(ReplacedValues_),
+        ReplacementInsertPoint(ReplacedInst_) {
+
+    if (ReplacementInsertPoint &&
+        llvm::isa<llvm::PHINode>(ReplacementInsertPoint)) {
+      llvm::Instruction *Next = ReplacementInsertPoint->getNextNode();
+
+      while (Next && llvm::isa<llvm::PHINode>(Next)) {
+        ReplacementInsertPoint = Next;
+        Next = Next->getNextNode();
+      }
+
+      assert(Next && "PHI replacement has no insertion point");
+      ReplacementInsertPoint = Next;
+    }
+  }
 
   static llvm::Type *GetInstReturnType(llvm::LLVMContext &Context, Inst *I);
 

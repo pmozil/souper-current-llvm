@@ -923,7 +923,16 @@ EnumerativeSynthesis::synthesize(SMTLIBSolver *SMTSolver,
   std::vector<PruneFunc> PruneFuncs = { [&Visited](Inst *I, std::vector<Inst*> &ReservedInsts)  {
     return CountPrune(I, ReservedInsts, Visited);
   }};
-  if (EnableDataflowPruning && !containsFloat(SC.LHS)) {
+  bool HasFloatContext =
+    containsFloat(SC.LHS) ||
+    llvm::any_of(SC.PCs, [](const InstMapping &P) {
+      return containsFloat(P.LHS) || containsFloat(P.RHS);
+    }) ||
+    llvm::any_of(SC.BPCs, [](const BlockPCMapping &B) {
+      return containsFloat(B.PC.LHS) || containsFloat(B.PC.RHS);
+    });
+
+  if (EnableDataflowPruning && !HasFloatContext) {
     DataflowPruning.init();
     PruneFuncs.push_back(DataflowPruning.getPruneFunc());
   }

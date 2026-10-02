@@ -740,7 +740,7 @@ namespace {
   llvm::APInt getSpecialAPInt(char C, unsigned Width) {
     switch (C) {
     case 'a':
-      return llvm::APInt(Width, -1);
+      return llvm::APInt::getAllOnes(Width);
     case 'b':
       return llvm::APInt(Width, 1);
     case 'c':
@@ -797,7 +797,7 @@ std::vector<ValueCache> PruningManager::generateInputSets(
 
   for (auto &&I : Inputs) {
     if (I->K == souper::Inst::Var)
-      Cache[I] = {llvm::APInt(I->Width, -1)};
+      Cache[I] = {llvm::APInt::getAllOnes(I->Width)};
   }
   if (isInputValid(Cache))
     InputSets.push_back(Cache);
@@ -822,8 +822,21 @@ std::vector<ValueCache> PruningManager::generateInputSets(
   int i, m;
   for (i = 0, m = 0; i < NumLargeInputs && m < MaxTries; ++m ) {
     for (auto &&I : Inputs) {
-      if (I->K == souper::Inst::Var)
-        Cache[I] = {llvm::APInt(I->Width, std::rand() % llvm::APInt(I->Width, -1).getLimitedValue())};
+      if (I->K != souper::Inst::Var)
+        continue;
+
+      uint64_t RandomValue = static_cast<uint64_t>(std::rand());
+
+      // std::rand() is at most 31 bits on the platforms we care about.
+      // Mask it for narrower APInt widths so the APInt constructor receives
+      // a value representable in I->Width bits.
+      if (I->Width < 64) {
+        uint64_t Mask =
+            llvm::APInt::getMaxValue(I->Width).getZExtValue();
+        RandomValue &= Mask;
+      }
+
+      Cache[I] = {llvm::APInt(I->Width, RandomValue)};
     }
     if (isInputValid(Cache)) {
       i++;

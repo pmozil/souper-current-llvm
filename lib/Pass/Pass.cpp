@@ -312,6 +312,31 @@ public:
         continue;
       }
 
+      if (Cand.Mapping.LHS == Cand.Mapping.RHS) {
+        if (DebugLevel > 2)
+          errs() << "; skipping self-replacement for LHS number "
+                 << LHSNum << "\n";
+        continue;
+      }
+
+      // CostFudge allows the synthesizer to explore candidates that are
+      // temporarily more expensive than the LHS.  However, the pass must
+      // only commit an actual optimization.  Otherwise we can repeatedly
+      // replace one equivalent instruction with another of equal cost.
+      if (souper::benefit(Cand.Mapping.LHS, Cand.Mapping.RHS) <= 0) {
+        if (DebugLevel > 2) {
+          errs() << "; skipping non-improving replacement for LHS number "
+                 << LHSNum
+                 << " (LHS cost="
+                 << souper::cost(Cand.Mapping.LHS,
+                                 /*IgnoreDepsWithExternalUses=*/true)
+                 << ", RHS cost="
+                 << souper::cost(Cand.Mapping.RHS)
+                 << ")\n";
+        }
+        continue;
+      }
+
       // here we finally commit to having a viable replacement
 
       if (ReplacementIdx < FirstReplace || ReplacementIdx > LastReplace) {
