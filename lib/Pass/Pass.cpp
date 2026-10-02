@@ -178,7 +178,7 @@ public:
     new AtomicRMWInst(AtomicRMWInst::Add, CntVar,
                       ConstantInt::get(C, APInt(64, 1)),
                       A, AtomicOrdering::Monotonic,
-                      SyncScope::System, Cand.Origin->getIterator());
+                      SyncScope::System, true, Cand.Origin->getIterator());
   }
 
   Value *getValue(Inst *I, Instruction *ReplacedInst,

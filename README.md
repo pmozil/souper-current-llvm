@@ -28,7 +28,7 @@ rm -rf build
 
 cmake -B build \
   -DCMAKE_BUILD_TYPE=Release \
-  -DALIVE2_ROOT=<path-to-alive2> \ # requires
+  -DALIVE2_ROOT=./third_party/alive2/ \ # requires
   -DZ3_EXECUTABLE=/usr/bin/z3 \ # optional
   -DZ3_INCLUDE_DIR=/usr/include \ #optional
   -DZ3_LIBRARY=/usr/lib/libz3.so # optional
