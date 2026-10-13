@@ -7,6 +7,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 string(REPLACE "-fno-exceptions" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
 
+# Add -Wswitch to check for missing cases in switches
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wswitch")
+
 set(CMAKE_MACOSX_RPATH NEW)
 
 if(NOT CMAKE_BUILD_TYPE)
