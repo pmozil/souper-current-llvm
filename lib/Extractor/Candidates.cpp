@@ -14,6 +14,9 @@
 
 #include "souper/Extractor/Candidates.h"
 #include "llvm/ADT/EquivalenceClasses.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/LazyValueInfo.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -28,6 +31,7 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/InitializePasses.h"
@@ -173,6 +177,11 @@ struct ExprBuilder {
   Inst *get(Value *V);
   Inst *getFromUse(Value *V);
   void markExternalUses(Inst *I);
+
+  bool MemMode = false;
+  bool Invalid = false;
+  std::vector<Value *> Opaque;
+  Inst *buildMemGEP(GetElementPtrInst *GEP);
 };
 
 }
@@ -260,6 +269,23 @@ Inst *ExprBuilder::makeArrayRead(Value *V) {
                       PowOfTwo, Negative, NumSignBits,
                       llvm::APInt::getAllOnes(Width), 0);
   I->IsFloat = isFloat;
+
+  if (MemMode) {
+    Opaque.push_back(V);
+    if (V->getType()->isPointerTy()) {
+      I->IsPtr = true;
+      I->PF.Align = (uint32_t)std::min<uint64_t>(
+          V->getPointerAlignment(DL).value(), 1u << 30);
+      bool CanBeNull = true, CanBeFreed = true;
+      uint64_t Deref =
+          V->getPointerDereferenceableBytes(DL, CanBeNull, &CanBeFreed);
+      if (!CanBeFreed)
+        I->PF.DerefBytes = Deref;
+      I->PF.NonNull = !CanBeNull;
+      if (auto *A = dyn_cast<Argument>(V))
+        I->PF.NoAlias = A->hasNoAliasAttr();   // only what Alive2 can also see
+    }
+  }
 
   return I;
 }
@@ -350,6 +376,12 @@ Inst *ExprBuilder::build(Value *V, APInt DemandedBits) {
 }
 
 Inst *ExprBuilder::buildHelper(Value *V) {
+  // Every pointer that is not a GEP becomes a pointer input
+  // (arguments, phis, selects, calls, globals...).
+  if (MemMode && V->getType()->isPointerTy() && !isa<GetElementPtrInst>(V) &&
+      !isa<ConstantPointerNull>(V))
+    return makeArrayRead(V);
+
   if (auto C = dyn_cast<Constant>(V)) {
     return buildConstant(C);
   } else if (auto ICI = dyn_cast<ICmpInst>(V)) {
@@ -557,6 +589,8 @@ Inst *ExprBuilder::buildHelper(Value *V) {
 
     case Instruction::IntToPtr:
     case Instruction::PtrToInt:
+      if (MemMode)
+        Invalid = true;
       if (Op->Width > DestSize)
         return IC.getInst(Inst::Trunc, DestSize, {Op});
       else if (Op->Width < DestSize)
@@ -608,7 +642,10 @@ Inst *ExprBuilder::buildHelper(Value *V) {
   } else if (auto GEP = dyn_cast<GetElementPtrInst>(V)) {
     if (isa<VectorType>(GEP->getType()))
       return makeArrayRead(V); // vector operation
-    // TODO: replace with a GEP instruction
+    if (MemMode)
+      return buildMemGEP(GEP);
+    // TODO-ish?: replace with a GEP instruction
+    // Kinda done IG
     //return buildGEP(get(GEP->getOperand(0)), gep_type_begin(GEP),
     //                gep_type_end(GEP));
     return makeArrayRead(V);
@@ -618,7 +655,7 @@ Inst *ExprBuilder::buildHelper(Value *V) {
     // TODO: In principle we could track loop iterations and maybe even maintain
     // a separate set of values for each iteration (as in bounded model
     // checking).
-    if (UseAlive) { // FIXME: Remove this after alive supports phi
+    if (UseAlive || MemMode) { // FIXME: Remove this after alive supports phi
       return makeArrayRead(V);
     }
     if (!ExtractPhi) {
@@ -802,9 +839,9 @@ void emplace_back_dedup(std::vector<InstMapping> &PCs, Inst *LHS, Inst *RHS) {
 void ExprBuilder::addPC(BasicBlock *BB, BasicBlock *Pred,
                         std::vector<InstMapping> &PCs) {
   if (auto Branch = dyn_cast<BranchInst>(Pred->getTerminator())) {
-    if (Branch->isConditional()) {
+    if (isa<CondBrInst>(Branch)) {
       emplace_back_dedup(
-          PCs, get(Branch->getCondition()),
+          PCs, get(dyn_cast<CondBrInst>(Branch)),
           IC.getConst(APInt(1, Branch->getSuccessor(0) == BB)));
     }
   } else if (auto Switch = dyn_cast<SwitchInst>(Pred->getTerminator())) {
@@ -1207,3 +1244,7 @@ FunctionCandidateSet souper::ExtractCandidates(Function &F, InstContext &IC,
   FPM.run(F, FAM);
   return Result;
 }
+
+// Memory-region extraction. Included here because ExprBuilder is private to
+// this translation unit.
+#include "MemoryRegions.inc"

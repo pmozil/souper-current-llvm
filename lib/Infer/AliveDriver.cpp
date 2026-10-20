@@ -1,6 +1,8 @@
 #include "souper/Extractor/ExprBuilder.h"
 #include "souper/Infer/AliveDriver.h"
 #include "souper/Inst/Inst.h"
+#include "souper/Inst/MemSchedule.h"
+#include "alive2/ir/globals.h"
 
 #include "alive2/ir/constant.h"
 #include "alive2/ir/function.h"
@@ -185,7 +187,64 @@ IR::Value *binOp(IR::Type &t, std::string name, A a, B b, IR::FpBinOp::Op op) {
           IR::FastMathFlags(), IR::FpRoundingMode::Default, IR::FpExceptionMode::Ignore));
 }
 
-  // Unimplemented : Freeze, CopyOp, Unreachable
+  // Alive2 memory is implicit and program-ordered.
+  // A load reads the memory at its position in the block,
+  // so callers must emit these in schedule order (see translateMemRegion).
+  IR::Value *load(IR::Type &t, std::string name, IR::Value *ptr,
+                  uint64_t align) {
+    return append(std::make_unique<IR::Load>(t, std::move(name), *ptr, align));
+  }
+
+  void store(IR::Value *ptr, IR::Value *val, uint64_t align) {
+    append(std::make_unique<IR::Store>(*ptr, *val, align));
+  }
+
+  IR::Value *gep(IR::Type &t, std::string name, IR::Value *ptr,
+                 IR::Value *off, bool inbounds) {
+    auto G = std::make_unique<IR::GEP>(t, std::move(name), *ptr, inbounds,
+                                       /*nusw=*/false, /*nuw=*/false);
+    G->addIdx(1, *off);          // byte offset: object size 1
+    return append(std::move(G));
+  }
+
+  IR::Value *ptrVar(IR::Type &t, std::string name,
+                    const souper::PtrFacts &PF) {
+    bool Fresh = identifiers.find(name) == identifiers.end();
+    IR::Value *V = toValue(t, name);
+    if (Fresh) {
+      // Only alignment and dereferenceability are passed on.
+      // Noalias is redundant, because the alias
+      // facts AA derived from it reach Alive2 as
+      // path conditions, and it makes the solver's
+      // job much harder.
+      // Nonnull is implied by dereferenceable.
+      IR::ParamAttrs A;
+      if (PF.DerefBytes) {
+        A.set(IR::ParamAttrs::Dereferenceable);
+        A.derefBytes = PF.DerefBytes;
+      }
+      if (PF.Align > 1) {
+        A.set(IR::ParamAttrs::Align);
+        A.align = PF.Align;
+      }
+      static_cast<IR::Input *>(V)->setAttributes(std::move(A));
+    }
+    return V;
+  }
+
+  IR::Value *ptrToInt(IR::Type &t, std::string name, IR::Value *ptr) {
+    return append(std::make_unique<IR::ConversionOp>(
+        t, std::move(name), *ptr, IR::ConversionOp::Ptr2Int));
+  }
+
+  IR::Value *insertValue(IR::Type &t, std::string name, IR::Value *agg,
+                         IR::Value *elt, unsigned idx) {
+    auto IV = std::make_unique<IR::InsertValue>(t, std::move(name), *agg, *elt);
+    IV->addIdx(idx);
+    return append(std::move(IV));
+  }
+
+  // TODO: Unimplemented : Freeze, CopyOp, Unreachable
 
 private:
   template <typename T>
@@ -342,11 +401,15 @@ synthesizeConstantUsingSolver(tools::Transform &t,
   return {};
 }
 
+unsigned souper::AliveMemNameSalt = 0;
+bool souper::AliveLastTimedOut = false;
+
 souper::AliveDriver::AliveDriver(Inst *LHS_, Inst *PreCondition_, InstContext &IC_,
                                  std::vector<Inst *> ExtraInputs)
     : LHS(LHS_), PreCondition(PreCondition_), IC(IC_) {
   smt::set_query_timeout(std::to_string(60000)); // milliseconds
   IsLHS = true;
+  IsMemRegion = containsMemory(LHS_);
   InstNumbers = 101;
   //FIXME: Magic number. 101 is chosen arbitrarily.
   //This should go away once non-input variable names are not discarded
@@ -468,6 +531,10 @@ void souper::AliveDriver::copyInputs(souper::AliveDriver::Cache &To,
     if (I->K == Inst::Kind::Var) {
       auto Input = std::make_unique<IR::Input>(Val->getType(),
                                                std::string(NameMap[I]));
+      // Pointer attributes (align, dereferenceable, noalias...) must be the
+      // same on both sides, or the target would be weaker than the source.
+      IR::ParamAttrs A = static_cast<IR::Input *>(Val)->getAttributes();
+      Input->setAttributes(std::move(A));
       To[I] = Input.get();
       RHS.addInput(std::move(Input));
     }
@@ -501,14 +568,16 @@ bool souper::AliveDriver::verify (Inst *RHS, Inst *RHSAssumptions) {
     return false;
 
   if (auto errs = tv.verify()) {
+    std::ostringstream os;
+    os << errs << "\n";
+    AliveLastTimedOut = os.str().find("Timeout") != std::string::npos;
     if (DebugLevel >= 2) {
-      std::ostringstream os;
-      os << errs << "\n";
       llvm::errs() << os.str();
       llvm::errs() << "RHS rejected by Alive2\n";
     }
     return false; // TODO: Encode errs into ErrorCode
   } else {
+    AliveLastTimedOut = false;
     if (DebugLevel >= 2)
       llvm::errs() << "RHS verified by Alive2\n";
     return true;
@@ -517,6 +586,9 @@ bool souper::AliveDriver::verify (Inst *RHS, Inst *RHSAssumptions) {
 
 bool souper::AliveDriver::translateRoot(const souper::Inst *I, const Inst *PC,
                                         IR::Function &F, Cache &ExprCache) {
+  if (I->K == Inst::MemResult)
+    return translateMemRegion(I, PC, F, ExprCache);   // before demanded bits
+
   if (!translateAndCache(I, F, ExprCache)) {
     return false;
   }
@@ -576,6 +648,15 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
     return true; // Already translated
   }
 
+  // Created only by translateMemRegion, in schedule order.
+  // Reaching one here means it was not scheduled
+  // so refuse rather than emit it at a random
+  // point in the block.
+  if (I->K == Inst::Load || I->K == Inst::Store ||
+      I->K == Inst::MemState || I->K == Inst::MemResult) {
+    return false;
+  }
+
   auto Ops = I->Ops;
   if (souper::Inst::isOverflowIntrinsicMain(I->K)) {
     Ops = Ops[0]->Ops;
@@ -603,6 +684,20 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
     } else {
       Name = "%var_" + I->Name;
     }
+  } else if (I->K == Inst::Var && I->IsPtr) {
+    // Unnamed inputs of a memory region.
+    // Alive2's solver time depends strongly
+    // on these names (the same query ran from 1 s
+    // to a 60 s timeout when only
+    // the names changed); p<k> / v<k> was
+    // the fastest scheme measured.
+    static const char *Pfx[] = {"p", "a", "x", "ptr", "q", "arg", "b", "m"};
+    Name = std::string("%") + Pfx[AliveMemNameSalt % 8] +
+           std::to_string(PtrVarCount++);
+  } else if (I->K == Inst::Var && IsMemRegion) {
+    static const char *Pfx[] = {"v", "z", "y", "val", "w", "x2", "k", "n"};
+    Name = std::string("%") + Pfx[AliveMemNameSalt % 8] +
+           std::to_string(IntVarCount++);
   } else {
     Name = "%" + std::to_string(InstNumbers++);
     // FIXME: Somewhere the non-input variable names are discarded,
@@ -614,8 +709,65 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
 
   auto &t = getType(I->Width, I->IsFloat);
 
+  // Integer operations on pointers (alias path conditions such as
+  // "q - p >= size") see the pointer's address.
+  // Swap in a ptrtoint view for the
+  // duration of this call; the guard restores the
+  // pointer on every return path.
+  std::vector<std::pair<const Inst *, IR::Value *>> SavedPtrs;
+  struct PtrViewGuard {
+    Cache &C;
+    std::vector<std::pair<const Inst *, IR::Value *>> &S;
+    ~PtrViewGuard() {
+      for (auto &KV : S)
+        C[KV.first] = KV.second;
+    }
+  } Guard{ExprCache, SavedPtrs};
+  // Equality of two pointers stays a pointer comparison
+  // (icmp on ptr), which is far cheaper for the solver
+  // than going through ptrtoint, because ptrtoint
+  // makes Alive2 treat the pointer as escaped.
+  bool PtrCompare = (I->K == Inst::Eq || I->K == Inst::Ne) && Ops.size() == 2 &&
+                    Ops[0]->IsPtr && Ops[1]->IsPtr;
+  if (!PtrCompare && I->K != Inst::PtrAdd && I->K != Inst::PtrAddInBounds &&
+      I->K != Inst::Var) {
+    for (Inst *Op : Ops) {
+      if (!Op->IsPtr)
+        continue;
+      auto Key = std::make_pair((const IR::Function *)&F, (const Inst *)Op);
+      IR::Value *IntView;
+      auto It = PtrIntCache.find(Key);
+      if (It != PtrIntCache.end()) {
+        IntView = It->second;
+      } else {
+        IntView = Builder.ptrToInt(getType(Op->Width, false),
+                                   "%" + std::to_string(InstNumbers++),
+                                   ExprCache[Op]);
+        PtrIntCache[Key] = IntView;
+      }
+      SavedPtrs.push_back({Op, ExprCache[Op]});
+      ExprCache[Op] = IntView;
+    }
+  }
+
   switch (I->K) {
+    case souper::Inst::PtrAdd:
+    case souper::Inst::PtrAddInBounds: {
+      // A GEP does not read memory, so emitting
+      // it from the operand DFS is position independent.
+      ExprCache[I] = Builder.gep(getPtrType(), Name, ExprCache[I->Ops[0]],
+                                 ExprCache[I->Ops[1]],
+                                 I->K == souper::Inst::PtrAddInBounds);
+      return true;
+    }
     case souper::Inst::Var: {
+      if (I->IsPtr) {
+        ExprCache[I] = Builder.ptrVar(getPtrType(), Name, I->PF);
+        if (IsLHS) {
+          Inputs.push_back({I, ExprCache[I]});
+        }
+        return true;   // integer dataflow facts do not apply to pointers
+      }
       ExprCache[I] = Builder.var(t, Name);
       if (IsLHS) {
         Inputs.push_back({I, ExprCache[I]});
@@ -941,6 +1093,106 @@ IR::Type &souper::AliveDriver::getType(
   }
 
   llvm_unreachable("unsupported FP type");
+}
+
+IR::Type &souper::AliveDriver::getPtrType() {
+  auto It = TypeCache.find("ptr");
+  if (It == TypeCache.end())
+    It = TypeCache.emplace("ptr", new IR::PtrType(0)).first;   // freed by ~AliveDriver
+  return *It->second;
+}
+
+bool souper::AliveDriver::translateMemRegion(const Inst *Root, const Inst *PC,
+                                             IR::Function &F, Cache &ExprCache) {
+  if (IR::bits_program_pointer != 64)
+    return false;               // pointers were extracted as 64-bit
+  MemSchedule S = linearize(const_cast<Inst *>(Root));
+  if (!S.Valid)
+    return false;
+  FunctionBuilder Builder(F);
+
+  // A fresh IR::Function defaults to memory(none),
+  // under which Alive2 treats every load and store as UB.
+  // Both sides would then be "always UB" and every
+  // transformation would verify vacuously.
+  F.getFnAttrs().mem.setFullAccess();
+
+  if (PC) {                     // v1: path conditions must not read memory
+    if (!translateAndCache(PC, F, ExprCache))
+      return false;
+    Builder.assume(ExprCache[PC]);
+  }
+
+  for (Inst *Op : S.Ops) {
+    if (!Op->MA.isSimple())
+      return false;             // volatile/atomic accesses are barriers in v1
+    Inst *PtrI = Op->Ops[1];
+    if (!PtrI->IsPtr || !translateAndCache(PtrI, F, ExprCache))
+      return false;
+    IR::Value *Ptr = ExprCache[PtrI];
+    if (Op->K == Inst::Load) {
+      ExprCache[Op] = Builder.load(getType(Op->Width, Op->IsFloat),
+                                   "%" + std::to_string(InstNumbers++), Ptr,
+                                   Op->MA.Align);
+    } else {
+      if (!translateAndCache(Op->Ops[2], F, ExprCache))
+        return false;
+      Builder.store(Ptr, ExprCache[Op->Ops[2]], Op->MA.Align);
+    }
+  }
+
+  std::vector<IR::Value *> Outs;
+  std::vector<IR::Type *> Tys;
+  std::string ShapeName = "memres";
+  for (Inst *L : S.LiveOuts) {
+    if (!translateAndCache(L, F, ExprCache))
+      return false;
+    Outs.push_back(ExprCache[L]);
+    Tys.push_back(&getType(L->Width, L->IsFloat));
+    ShapeName += std::string(L->IsFloat ? "_f" : "_i") + std::to_string(L->Width);
+  }
+
+  if (Outs.empty()) {           // stores only: Alive2 still checks final memory
+    F.getBB("").addInstr(
+        std::make_unique<IR::Return>(IR::Type::voidTy, IR::Value::voidVal));
+    F.setType(IR::Type::voidTy);
+    return true;
+  }
+  if (Outs.size() == 1) {
+    Builder.ret(*Tys[0], Outs[0]);
+    F.setType(*Tys[0]);
+    return true;
+  }
+
+  // Several live-outs: return a struct.
+  // The type is cached by shape so the LHS
+  // and RHS functions share one IR::StructType object,
+  // as getOverflowType does.
+  auto TIt = TypeCache.find(ShapeName);
+  if (TIt == TypeCache.end()) {
+    std::vector<IR::Type *> Children = Tys;
+    std::vector<bool> Padding(Tys.size(), false);
+    std::string N = ShapeName;
+    TIt = TypeCache.emplace(ShapeName,
+                            new IR::StructType(std::move(N), std::move(Children),
+                                               std::move(Padding))).first;
+  }
+  IR::Type &ST = *TIt->second;
+  // A constant aggregate cannot hold values
+  // defined later in the block, so
+  // build the struct with a chain of insertvalue
+  // starting from poison. Alive2
+  // tracks poison per element, so one poisoned
+  // live-out does not hide another.
+  auto PoisonBase = std::make_unique<IR::PoisonValue>(ST);
+  IR::Value *Cur = PoisonBase.get();
+  F.addConstant(std::move(PoisonBase));
+  for (unsigned I = 0; I < Outs.size(); ++I)
+    Cur = Builder.insertValue(ST, "%" + std::to_string(InstNumbers++), Cur,
+                              Outs[I], I);
+  Builder.ret(ST, Cur);
+  F.setType(ST);
+  return true;
 }
 
 IR::Type &souper::AliveDriver::getOverflowType(int Width, bool IsFloat) {

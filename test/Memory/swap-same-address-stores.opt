@@ -1,0 +1,14 @@
+; RUN: %souper-check %s | %FileCheck %s
+; CHECK: Invalid
+; Swapping two stores to the same address changes the final value.
+%p:i64 = var (ptr) (align=4) (dereferenceable=4)
+%a:i32 = var
+%b:i32 = var
+%m0 = memstate
+%s1 = store %m0, %p, %a (align=4)
+%s2 = store %s1, %p, %b (align=4)
+%lhs = memresult %s2
+%t1 = store %m0, %p, %b (align=4)
+%t2 = store %t1, %p, %a (align=4)
+%rhs = memresult %t2
+cand %lhs %rhs

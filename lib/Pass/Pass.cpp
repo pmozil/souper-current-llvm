@@ -17,7 +17,9 @@
 #include "llvm/Analysis/LazyValueInfo.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/UnreachableBlockElim.h"
 #include "llvm/IR/Constants.h"
@@ -40,13 +42,16 @@
 #include "souper/KVStore/KVStore.h"
 #include "souper/SMTLIB2/Solver.h"
 #include "souper/Codegen/Codegen.h"
+#include "souper/Infer/MemorySynthesis.h"
 #include "souper/Tool/GetSolver.h"
 #include "souper/Tool/CandidateMapUtils.h"
 #include "set"
+#include <optional>
 
 #define DEBUG_TYPE "souper"
 STATISTIC(InstructionReplaced, "Number of instructions replaced by another instruction");
 STATISTIC(DominanceCheckFailed, "Number of failed replacement due to dominance check");
+STATISTIC(MemRegionsRewritten, "Number of memory regions rewritten");
 
 using namespace souper;
 using namespace llvm;
@@ -64,6 +69,24 @@ DebugFlagParser("souper-debug-level",
      "The larger the number is, the more fine-grained debug "
      "information will be printed."),
      cl::location(DebugLevel), cl::init(1));
+
+static cl::opt<bool> MemOpt("souper-mem-opt", cl::init(false),
+    cl::desc("Reorder, forward and delete memory operations (default=false)"));
+
+static cl::opt<unsigned> MemMaxWindow("souper-mem-max-window", cl::init(12),
+    cl::desc("Max loads+stores per memory region (default=12)"));
+
+static cl::opt<unsigned> MemMaxOrders("souper-mem-max-orders", cl::init(2000),
+    cl::desc("Max enumerated orders per move set (default=2000)"));
+
+static cl::opt<unsigned> MemPruneTrials("souper-mem-prune-trials", cl::init(32),
+    cl::desc("Concrete trials before asking Alive2 (default=32)"));
+
+static cl::opt<unsigned> MemMaxVerify("souper-mem-max-verify", cl::init(20),
+    cl::desc("Max Alive2 calls per memory region (default=20)"));
+
+static cl::opt<bool> MemUseTTI("souper-mem-use-tti", cl::init(false),
+    cl::desc("Use TargetTransformInfo for per-access costs (default=false)"));
 
 static cl::opt<bool> Verify("souper-verify", cl::init(false),
     cl::desc("Verify functions before Souper processes them (default=false)"));
@@ -95,6 +118,42 @@ static void eliminateDeadCode(Function &F) {
   FAM.registerPass([&] { return TargetLibraryAnalysis(); });
   FAM.registerPass([&] { return PassInstrumentationAnalysis(); });
   FPM.run(F, FAM);
+}
+
+// Per-access costs from the target.
+// TTI reports reciprocal-throughput costs,
+// which are not on the same scale as the built-in
+// table or LoadLatency; when this is on,
+// scale MemCostContext::LoadLatency to match.
+static MemCostContext makeTTIMemCostContext(TargetTransformInfo &TTI) {
+  MemCostContext C;
+  C.OpCostHook = [&TTI](const souper::Inst *I) -> std::optional<int> {
+    if ((I->K != souper::Inst::Load && I->K != souper::Inst::Store) ||
+        I->Origins.empty())
+      return std::nullopt;
+    unsigned Opc, AS;
+    Type *Ty;
+    Align A;
+    if (auto *L = dyn_cast<LoadInst>(I->Origins.front())) {
+      Opc = Instruction::Load;
+      Ty = L->getType();
+      A = L->getAlign();
+      AS = L->getPointerAddressSpace();
+    } else if (auto *S = dyn_cast<StoreInst>(I->Origins.front())) {
+      Opc = Instruction::Store;
+      Ty = S->getValueOperand()->getType();
+      A = S->getAlign();
+      AS = S->getPointerAddressSpace();
+    } else {
+      return std::nullopt;
+    }
+    InstructionCost Cost = TTI.getMemoryOpCost(
+        Opc, Ty, A, AS, TargetTransformInfo::TCK_RecipThroughput);
+    if (!Cost.isValid())
+      return std::nullopt;
+    return (int)Cost.getValue();
+  };
+  return C;
 }
 
 struct SouperPass : PassInfoMixin<SouperPass> {
@@ -190,6 +249,52 @@ public:
         .getValue(I);
   }
 
+  // Finds a memory region with a strictly cheaper,
+  // Alive2-verified schedule and applies it.
+  // Returns true if the IR changed.
+  bool runMemoryOpt(Function &F, FunctionAnalysisManager &FAM,
+                    const LoopInfo &LI, DemandedBits &DB, LazyValueInfo &LVI,
+                    ScalarEvolution &SE, TargetLibraryInfo &TLI,
+                    InstContext &IC) {
+    auto &AA = FAM.getResult<AAManager>(F);
+    auto &TTI = FAM.getResult<TargetIRAnalysis>(F);
+    MemoryRegionExtractor X(F, LI, DB, LVI, SE, TLI, AA, IC);
+    MemSynthOptions O;
+    O.MaxOrders = MemMaxOrders;
+    O.PruneTrials = MemPruneTrials;
+    O.MaxVerify = MemMaxVerify;
+    if (MemUseTTI)
+      O.Cost = makeTTIMemCostContext(TTI);
+
+    for (auto &C : X.extract(MemMaxWindow)) {
+      if (DebugLevel > 1) {
+        errs() << "\n; memory region in " << F.getName() << " ("
+               << C.MemOps.size() << " accesses), cost "
+               << memCost(C.Mapping.LHS, O.Cost) << "\n";
+      }
+      std::vector<MemPlan> Plans;
+      MemSynthStats St;
+      if (synthesizeMemoryReorders(X, C, IC, O, Plans, &St) || Plans.empty()) {
+        if (DebugLevel > 1)
+          errs() << "; no better schedule (built " << St.PlansBuilt
+                 << ", cheaper " << St.Cheaper << ", pruned " << St.Pruned
+                 << ", verified " << St.Verified << ")\n";
+        continue;
+      }
+      // Termination guard: commit only a strict improvement.
+      Inst *RHS = X.build(C, Plans.front());
+      if (!RHS || memBenefit(C.Mapping.LHS, RHS, O.Cost) <= 0)
+        continue;
+      if (!applyMemoryPlan(C, Plans.front()))
+        continue;
+      ++MemRegionsRewritten;
+      if (DebugLevel > 1)
+        errs() << "; memory region rewritten\n";
+      return true;
+    }
+    return false;
+  }
+
   bool runOnFunction(Function &F, FunctionAnalysisManager &FAM) {
     std::string FunctionName;
     if (F.hasLocalLinkage()) {
@@ -228,6 +333,11 @@ public:
       FM2.addPass(UnreachableBlockElimPass());
       FM2.addPass(ADCEPass());
       FM2.run(F, FAM2);
+    }
+
+    if (MemOpt && runMemoryOpt(F, FAM, LI, DB, LVI, SE, TLI, IC)) {
+      FAM.invalidate(F, PreservedAnalyses::none());   // instruction order changed
+      return true;
     }
 
     FunctionCandidateSet CS = ExtractCandidatesFromPass(F, LI, DB, LVI, SE, TLI, IC, EBC);

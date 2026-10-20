@@ -26,6 +26,9 @@
 
 namespace souper {
 
+extern unsigned AliveMemNameSalt;
+extern bool AliveLastTimedOut;
+
 // TODO: Rename to AliveBuilder if we implement the ExprBuilder API in future
 class AliveDriver {
   typedef std::unordered_map<const Inst *, IR::Value *> Cache;
@@ -55,15 +58,24 @@ private:
 
   IR::Type &getType(unsigned Width, bool IsFloat = false);
   IR::Type &getOverflowType(int n, bool IsFloat = false);
+  IR::Type &getPtrType();
 
   bool translateRoot(const Inst *I, const Inst *PC, IR::Function &F, Cache &ExprCache);
   bool translateAndCache(const Inst *I, IR::Function &F, Cache &ExprCache);
+  bool translateMemRegion(const Inst *Root, const Inst *PC, IR::Function &F,
+                          Cache &ExprCache);
   bool translateDataflowFacts(const Inst *I, IR::Function &F, Cache &ExprCache);
   void translateDemandedBits(const Inst *I, IR::Function &F, Cache &ExprCache);
   IR::Function LHSF;
 
   int InstNumbers;
   std::unordered_map<const Inst *, std::string> NamesCache;
+  unsigned PtrVarCount = 0, IntVarCount = 0;   // names for unnamed Vars
+  bool IsMemRegion = false;
+  // Integer view (ptrtoint) of a pointer value,
+  // per Alive2 function.
+  // Used when an integer operation reads a pointer.
+  std::map<std::pair<const IR::Function *, const Inst *>, IR::Value *> PtrIntCache;
   bool IsLHS;
 
   InstContext &IC;

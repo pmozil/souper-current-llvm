@@ -15,6 +15,7 @@
 #ifndef SOUPER_CODEGEN_CODEGEN_H
 #define SOUPER_CODEGEN_CODEGEN_H
 
+#include "souper/Extractor/Candidates.h"
 #include "souper/Inst/Inst.h"
 #include "souper/Parser/Parser.h"
 #include "llvm/IR/Dominators.h"
@@ -80,6 +81,13 @@ struct BackendCost {
   // void getBackendCost(InstContext &IC, Inst *I, BackendCost &BC);
  
 bool compareCosts(const BackendCost &C1, const BackendCost &C2);
+
+/// Rewrites a memory region in the LLVM IR according to a verified plan: moves
+/// the original instructions (keeping their metadata), replaces forwarded
+/// loads with the stored value and deletes dead stores. Nothing is touched
+/// unless the new order is valid. Returns false (leaving the IR unchanged) if
+/// the plan cannot be applied.
+bool applyMemoryPlan(const MemoryRegionCandidate &C, const MemPlan &P);
 
 } // namespace souper
 

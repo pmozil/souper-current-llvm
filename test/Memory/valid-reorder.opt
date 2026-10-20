@@ -1,0 +1,15 @@
+; RUN: %souper-check %s | %FileCheck %s
+; CHECK: ; LGTM
+; Hoist a load above a store to a different (AA-proved disjoint) address.
+%p:i64 = var (ptr) (align=4) (dereferenceable=4)
+%q:i64 = var (ptr) (align=4) (dereferenceable=4)
+%v:i32 = var
+%m0 = memstate
+%s = store %m0, %p, %v (align=4)
+%x1:i32 = load %s, %q (align=4)
+%lhs = memresult %s, %x1
+%x0:i32 = load %m0, %q (align=4)
+%rhs = memresult %s, %x0
+%c:i1 = ne %p, %q
+pc %c 1:i1
+cand %lhs %rhs

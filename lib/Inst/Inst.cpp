@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "souper/Inst/Inst.h"
+#include "souper/Inst/MemCost.h"
 
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -206,8 +207,11 @@ std::string ReplacementContext::printInstImpl(Inst *I, llvm::raw_ostream &Out,
     case Inst::UMulO:
       break;
     default: {
-      Out << "%" << InstName << ":";
-      printType(I, Out);
+      Out << "%" << InstName;
+      if (I->Width != 0) {
+        Out << ":";
+        printType(I, Out);
+      }
       Out << " = " << Inst::getKindName(I->K);
       if (I->K == Inst::Var) {
         if (I->KnownZeros.getBoolValue() || I->KnownOnes.getBoolValue())
@@ -226,8 +230,28 @@ std::string ReplacementContext::printInstImpl(Inst *I, llvm::raw_ostream &Out,
         if (!I->Range.isFullSet())
           Out << " (range=[" << I->Range.getLower()
               << "," << I->Range.getUpper() << "))";
+        if (I->IsPtr) {
+          Out << " (ptr)";
+          if (I->PF.Align > 1)
+            Out << " (align=" << I->PF.Align << ")";
+          if (I->PF.DerefBytes)
+            Out << " (dereferenceable=" << I->PF.DerefBytes << ")";
+          if (I->PF.NonNull)
+            Out << " (nonnull)";
+          if (I->PF.NoAlias)
+            Out << " (noalias)";
+        }
       }
       Out << OpsSS.str();
+      if (I->K == Inst::Load || I->K == Inst::Store) {
+        Out << " (align=" << I->MA.Align << ")";
+        if (I->MA.Volatile)
+          Out << " (volatile)";
+        if (I->MA.NonTemporal)
+          Out << " (nontemporal)";
+        if (I->MA.Ordering != MemOrdering::NotAtomic)
+          Out << " (atomic=" << (unsigned)I->MA.Ordering << ")";
+      }
 
       if (OrigI->DepsWithExternalUses.find(I) != OrigI->DepsWithExternalUses.end())
         Out << " (hasExternalUses)";
@@ -535,6 +559,12 @@ const char *Inst::getKindName(Kind K) {
     return "o";
   case Freeze:
     return "freeze";
+  case MemState:       return "memstate";
+  case Load:           return "load";
+  case Store:          return "store";
+  case MemResult:      return "memresult";
+  case PtrAdd:         return "ptradd";
+  case PtrAddInBounds: return "ptradd.inbounds";
   default:
     llvm_unreachable("all cases covered");
   }
@@ -631,6 +661,12 @@ Inst::Kind Inst::getKind(std::string Name) {
                    .Case("hole", Inst::Hole)
                    .Case("reservedconst", Inst::ReservedConst)
                    .Case("freeze", Inst::Freeze)
+                   .Case("memstate", Inst::MemState)
+                   .Case("load", Inst::Load)
+                   .Case("store", Inst::Store)
+                   .Case("memresult", Inst::MemResult)
+                   .Case("ptradd", Inst::PtrAdd)
+                   .Case("ptradd.inbounds", Inst::PtrAddInBounds)
                    .Default(Inst::None);
 }
 
@@ -648,6 +684,15 @@ void Inst::Profile(llvm::FoldingSetNodeID &ID) const {
     assert(0 && "Var instructions should not be in FoldingSet");
   case Phi:
     ID.AddPointer(B);
+    break;
+  case MemState:
+  case Load:
+  case Store:
+  case MemResult:
+  case PtrAdd:
+  case PtrAddInBounds:
+    ID.AddBoolean(IsPtr);
+    MA.Profile(ID);
     break;
   default:
     if (!DemandedBits.isAllOnes())
@@ -879,6 +924,68 @@ Inst *InstContext::getInst(Inst::Kind K, unsigned Width,
   return getInst(K, Width, Ops, DemandedBits, Available, isFloat);
 }
 
+Inst *InstContext::getMemInst(Inst::Kind K, unsigned Width,
+                              std::vector<Inst *> Ops, const MemAttrs &MA,
+                              bool IsPtr) {
+  auto N = std::make_unique<Inst>();
+  N->K = K;
+  N->Width = Width;
+  N->Ops = std::move(Ops);
+  N->MA = MA;
+  N->IsPtr = IsPtr;
+  N->B = nullptr;
+  N->DemandedBits = llvm::APInt::getAllOnes(Width ? Width : 1);
+  N->Available = true;
+  N->HarvestKind = HarvestType::HarvestedFromDef;
+  N->HarvestFrom = nullptr;
+
+  llvm::FoldingSetNodeID ID;
+  N->Profile(ID);
+  void *IP = nullptr;
+  if (Inst *Existing = InstSet.FindNodeOrInsertPos(ID, IP))
+    return Existing;
+  Inst *R = N.get();
+  Insts.emplace_back(std::move(N));
+  InstSet.InsertNode(R, IP);
+  return R;
+}
+
+Inst *InstContext::getMemState() {
+  return getMemInst(Inst::MemState, 0, {}, MemAttrs(), false);
+}
+
+Inst *InstContext::getLoad(Inst *Mem, Inst *Ptr, unsigned W,
+                           const MemAttrs &MA) {
+  return getMemInst(Inst::Load, W, {Mem, Ptr}, MA, false);
+}
+
+Inst *InstContext::getStore(Inst *Mem, Inst *Ptr, Inst *Val,
+                            const MemAttrs &MA) {
+  return getMemInst(Inst::Store, 0, {Mem, Ptr, Val}, MA, false);
+}
+
+Inst *InstContext::getMemResult(Inst *Mem, const std::vector<Inst *> &LO) {
+  std::vector<Inst *> Ops{Mem};
+  Ops.insert(Ops.end(), LO.begin(), LO.end());
+  // Nominal width 1: a region root must pass
+  // the mapping type checks (cand/infer/pc lines, Solver),
+  // which reject untyped roots. The value is never read.
+  return getMemInst(Inst::MemResult, 1, std::move(Ops), MemAttrs(), false);
+}
+
+Inst *InstContext::getPtrAdd(Inst *Ptr, Inst *Off, bool InBounds) {
+  return getMemInst(InBounds ? Inst::PtrAddInBounds : Inst::PtrAdd, Ptr->Width,
+                    {Ptr, Off}, MemAttrs(), true);
+}
+
+Inst *InstContext::createPtrVar(unsigned PtrBits, llvm::StringRef Name,
+                                const PtrFacts &PF) {
+  Inst *V = createVar(PtrBits, Name);
+  V->IsPtr = true;
+  V->PF = PF;
+  return V;
+}
+
 std::vector<Inst *> InstContext::getVariables() const {
   std::vector<Inst *> AllVariables;
   for (const auto &OuterIter : VarInstsByWidth) {
@@ -1044,7 +1151,16 @@ int Inst::getCost(Inst::Kind K) {
     case USubO:
     case SMulO:
     case UMulO:
+    case MemState:
+    case MemResult:
       return 0;
+    case Load:
+      return MemCostDefaults::LoadBase;
+    case Store:
+      return MemCostDefaults::StoreBase;
+    case PtrAdd:
+    case PtrAddInBounds:
+      return 1;
     case BitReverse:
     case BSwap:
     case CtPop:
@@ -1380,13 +1496,15 @@ Inst *souper::getInstCopy(Inst *I, InstContext &IC,
       }
     }
     if (!Copy) {
-      if (CloneVars && I->SynthesisConstID == 0)
+      if (CloneVars && I->SynthesisConstID == 0) {
         Copy = IC.createVar(I->Width, I->Name, I->Range, I->KnownZeros,
                             I->KnownOnes, I->NonZero, I->NonNegative,
                             I->PowOfTwo, I->Negative, I->NumSignBits,
                             I->DemandedBits,
                             I->SynthesisConstID, I->IsFloat);
-      else {
+        Copy->IsPtr = I->IsPtr;
+        Copy->PF = I->PF;
+      } else {
         Copy = I;
       }
     }
@@ -1404,6 +1522,8 @@ Inst *souper::getInstCopy(Inst *I, InstContext &IC,
     }
   } else if (I->K == Inst::Const || I->K == Inst::UntypedConst) {
     Copy = I;
+  } else if (Inst::isMemKind(I->K)) {
+    Copy = IC.getMemInst(I->K, I->Width, Ops, I->MA, I->IsPtr);
   } else {
     Copy = IC.getInst(I->K, I->Width, Ops, I->DemandedBits, I->Available, I->IsFloat);
   }
@@ -1441,6 +1561,8 @@ Inst *souper::instJoin(Inst *I, Inst *EmptyInst, Inst *NewInst,
     }
   } else if (I->K == Inst::Const || I->K == Inst::UntypedConst) {
     Copy = I;
+  } else if (Inst::isMemKind(I->K)) {
+    Copy = IC.getMemInst(I->K, I->Width, Ops, I->MA, I->IsPtr);
   } else {
     Copy = IC.getInst(I->K, I->Width, Ops, true, I->IsFloat);
   }
@@ -1513,4 +1635,21 @@ bool souper::containsFloat(const Inst *Root) {
     return false;
   };
   return Visit(Root);
+}
+
+bool souper::containsMemory(const Inst *Root) {
+  std::set<const Inst *> Visited;
+  std::vector<const Inst *> Work{Root};
+  while (!Work.empty()) {
+    const Inst *I = Work.back();
+    Work.pop_back();
+    if (!Visited.insert(I).second)
+      continue;
+    if (I->K == Inst::MemState || I->K == Inst::Load ||
+        I->K == Inst::Store || I->K == Inst::MemResult)
+      return true;
+    for (Inst *Op : I->Ops)
+      Work.push_back(Op);
+  }
+  return false;
 }

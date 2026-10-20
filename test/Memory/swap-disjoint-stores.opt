@@ -1,0 +1,15 @@
+; RUN: %souper-check %s | %FileCheck %s
+; CHECK: ; LGTM
+; Two stores to p and p+4 (same base, constant offsets) can be swapped.
+%p:i64 = var (ptr) (align=8) (dereferenceable=8)
+%a:i32 = var
+%b:i32 = var
+%m0 = memstate
+%p4:i64 = ptradd.inbounds %p, 4
+%s1 = store %m0, %p, %a (align=4)
+%s2 = store %s1, %p4, %b (align=4)
+%lhs = memresult %s2
+%t1 = store %m0, %p4, %b (align=4)
+%t2 = store %t1, %p, %a (align=4)
+%rhs = memresult %t2
+cand %lhs %rhs

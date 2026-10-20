@@ -17,6 +17,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "souper/Extractor/Candidates.h"
@@ -370,6 +371,8 @@ struct Parser {
                                   std::string &ErrStr);
 
   bool parseLine(std::string &ErrStr);
+  bool parseMemInst(Inst::Kind IK, StringRef InstName, unsigned InstWidth,
+                    TokenPos TP, std::string &ErrStr);
 
   ParsedReplacement parseReplacement(std::string &ErrStr);
   std::vector<ParsedReplacement> parseReplacements(std::string &ErrStr);
@@ -961,6 +964,132 @@ bool Parser::parseInstAttribute(std::string &ErrStr, Inst *LHS) {
   return true;
 }
 
+bool Parser::parseMemInst(Inst::Kind IK, StringRef InstName,
+                          unsigned InstWidth, TokenPos TP,
+                          std::string &ErrStr) {
+  std::vector<Inst *> Ops;
+  if (IK != Inst::MemState) {
+    while (true) {
+      Inst *Op = parseInst(ErrStr);
+      if (!Op)
+        return false;
+      Ops.push_back(Op);
+      if (CurTok.K != Token::Comma)
+        break;
+      if (!consumeToken(ErrStr))
+        return false;
+    }
+  }
+
+  MemAttrs MA;
+  while (CurTok.K == Token::OpenParen) {
+    if (!consumeToken(ErrStr))
+      return false;
+    if (CurTok.K != Token::Ident) {
+      ErrStr = makeErrStr(TP, "expected a memory attribute");
+      return false;
+    }
+    std::string A = CurTok.str().str();
+    if (!consumeToken(ErrStr))
+      return false;
+    if (A == "volatile") {
+      MA.Volatile = true;
+    } else if (A == "nontemporal") {
+      MA.NonTemporal = true;
+    } else if (A == "align" || A == "atomic") {
+      if (CurTok.K != Token::Eq) {
+        ErrStr = makeErrStr(TP, "expected '='");
+        return false;
+      }
+      if (!consumeToken(ErrStr))
+        return false;
+      if (A == "align") {
+        if (CurTok.K != Token::UntypedInt) {
+          ErrStr = makeErrStr(TP, "expected an integer alignment");
+          return false;
+        }
+        MA.Align = CurTok.Val.getLimitedValue();
+      } else {
+        // atomic=unordered|monotonic|acquire|release|acqrel|seqcst
+        if (CurTok.K != Token::Ident) {
+          ErrStr = makeErrStr(TP, "expected an ordering");
+          return false;
+        }
+        MA.Ordering = llvm::StringSwitch<MemOrdering>(CurTok.str())
+                          .Case("unordered", MemOrdering::Unordered)
+                          .Case("monotonic", MemOrdering::Monotonic)
+                          .Case("acquire", MemOrdering::Acquire)
+                          .Case("release", MemOrdering::Release)
+                          .Case("acqrel", MemOrdering::AcqRel)
+                          .Case("seqcst", MemOrdering::SeqCst)
+                          .Default(MemOrdering::NotAtomic);
+      }
+      if (!consumeToken(ErrStr))
+        return false;
+    } else {
+      ErrStr = makeErrStr(TP, "unknown memory attribute '" + A + "'");
+      return false;
+    }
+    if (CurTok.K != Token::CloseParen) {
+      ErrStr = makeErrStr(TP, "expected ')'");
+      return false;
+    }
+    if (!consumeToken(ErrStr))
+      return false;
+  }
+
+  auto Fail = [&](const char *Msg) {
+    ErrStr = makeErrStr(TP, Msg);
+    return false;
+  };
+  Inst *I = nullptr;
+  switch (IK) {
+  case Inst::MemState:
+    if (InstWidth)
+      return Fail("memstate has no width");
+    I = IC.getMemState();
+    break;
+  case Inst::Load:
+    if (!InstWidth)
+      return Fail("load must have a width");
+    if (Ops.size() != 2 || !Inst::isMemToken(Ops[0]->K) || !Ops[1]->IsPtr)
+      return Fail("load expects (mem token, pointer)");
+    I = IC.getLoad(Ops[0], Ops[1], InstWidth, MA);
+    break;
+  case Inst::Store:
+    if (InstWidth)
+      return Fail("store has no width");
+    if (Ops.size() != 3 || !Inst::isMemToken(Ops[0]->K) || !Ops[1]->IsPtr ||
+        Ops[2]->Width == 0)
+      return Fail("store expects (mem token, pointer, typed value)");
+    I = IC.getStore(Ops[0], Ops[1], Ops[2], MA);
+    break;
+  case Inst::MemResult:
+    if (InstWidth > 1)
+      return Fail("memresult has a nominal width of 1");
+    if (Ops.empty() || !Inst::isMemToken(Ops[0]->K))
+      return Fail("memresult expects a mem token first");
+    I = IC.getMemResult(Ops[0], {Ops.begin() + 1, Ops.end()});
+    break;
+  case Inst::PtrAdd:
+  case Inst::PtrAddInBounds:
+    if (Ops.size() != 2 || !Ops[0]->IsPtr)
+      return Fail("ptradd expects (pointer, byte offset)");
+    if (InstWidth && InstWidth != Ops[0]->Width)
+      return Fail("ptradd width must equal the pointer's width");
+    if (Ops[1]->K == Inst::UntypedConst)   // untyped literal
+      Ops[1] = IC.getConst(Ops[1]->Val.sextOrTrunc(Ops[0]->Width));
+    if (Ops[1]->Width != Ops[0]->Width)
+      return Fail("ptradd offset must have the pointer's width");
+    I = IC.getPtrAdd(Ops[0], Ops[1], IK == Inst::PtrAddInBounds);
+    break;
+  default:
+    llvm_unreachable("not a memory kind");
+  }
+  Context.setInst(InstName, I);
+  return true;
+}
+
 bool Parser::parseLine(std::string &ErrStr) {
   switch (CurTok.K) {
     case Token::Ident:
@@ -1187,6 +1316,9 @@ bool Parser::parseLine(std::string &ErrStr) {
 
       if (!consumeToken(ErrStr)) return false;
 
+      if (Inst::isMemKind(IK))
+        return parseMemInst(IK, InstName, InstWidth, TP, ErrStr);
+
       Block *B = 0;
 
       if (IK == Inst::Var || IK == Inst::ReservedConst || IK == Inst::ReservedInst) {
@@ -1197,6 +1329,8 @@ bool Parser::parseLine(std::string &ErrStr) {
         bool NonZero = false, NonNegative = false, PowOfTwo = false, Negative = false,
           hasExternalUses = false;
         unsigned SignBits = 0;
+        bool IsPtr = false;
+        PtrFacts PF;
         while (CurTok.K != Token::ValName && CurTok.K != Token::Ident && CurTok.K != Token::Eof) {
           if (CurTok.K == Token::OpenParen) {
             if (!consumeToken(ErrStr))
@@ -1221,7 +1355,41 @@ bool Parser::parseLine(std::string &ErrStr) {
                   return false;
                 break;
               case Token::Ident:
-                if (CurTok.str() == "powerOfTwo") {
+                if (CurTok.str() == "ptr") {
+                  IsPtr = true;
+                  if (!consumeToken(ErrStr))
+                    return false;
+                } else if (CurTok.str() == "nonnull") {
+                  PF.NonNull = true;
+                  if (!consumeToken(ErrStr))
+                    return false;
+                } else if (CurTok.str() == "noalias") {
+                  PF.NoAlias = true;
+                  if (!consumeToken(ErrStr))
+                    return false;
+                } else if (CurTok.str() == "align" ||
+                           CurTok.str() == "dereferenceable") {
+                  bool IsAlign = CurTok.str() == "align";
+                  if (!consumeToken(ErrStr))
+                    return false;
+                  if (CurTok.K != Token::Eq) {
+                    ErrStr = makeErrStr(TP, "expected '=' after pointer fact");
+                    return false;
+                  }
+                  if (!consumeToken(ErrStr))
+                    return false;
+                  if (CurTok.K != Token::UntypedInt) {
+                    ErrStr = makeErrStr(TP, "expected an integer");
+                    return false;
+                  }
+                  uint64_t V = CurTok.Val.getLimitedValue();
+                  if (IsAlign)
+                    PF.Align = V;
+                  else
+                    PF.DerefBytes = V;
+                  if (!consumeToken(ErrStr))
+                    return false;
+                } else if (CurTok.str() == "powerOfTwo") {
                   PowOfTwo = true;
                   if (!consumeToken(ErrStr))
                     return false;
@@ -1348,11 +1516,15 @@ bool Parser::parseLine(std::string &ErrStr) {
           }
         }
         Inst *I;
-        if (IK == Inst::Var)
+        if (IK == Inst::Var) {
           I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
                            NonNegative, PowOfTwo, Negative, SignBits,
                            llvm::APInt::getAllOnes(InstWidth), 0, InstIsFloat);
-        else if (IK == Inst::ReservedConst)
+          if (IsPtr) {
+            I->IsPtr = true;
+            I->PF = PF;
+          }
+        } else if (IK == Inst::ReservedConst)
           I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
                            NonNegative, PowOfTwo, Negative, SignBits,
                            llvm::APInt::getAllOnes(InstWidth), ++ReservedConstCounter, InstIsFloat);

@@ -1,0 +1,12 @@
+; RUN: %souper-check %s | %FileCheck %s
+; CHECK: Invalid
+; Forwarding the wrong value must be rejected.
+%p:i64 = var (ptr) (align=4) (dereferenceable=4)
+%v:i32 = var
+%w:i32 = var
+%m0 = memstate
+%s = store %m0, %p, %v (align=4)
+%x:i32 = load %s, %p (align=4)
+%lhs = memresult %s, %x
+%rhs = memresult %s, %w
+cand %lhs %rhs

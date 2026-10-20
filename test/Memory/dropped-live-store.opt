@@ -1,0 +1,10 @@
+; RUN: %souper-check %s | %FileCheck %s
+; CHECK: Invalid
+; Dropping a store nothing overwrites changes final memory.
+%p:i64 = var (ptr) (align=4) (dereferenceable=4)
+%a:i32 = var
+%m0 = memstate
+%s1 = store %m0, %p, %a (align=4)
+%lhs = memresult %s1
+%rhs = memresult %m0
+cand %lhs %rhs

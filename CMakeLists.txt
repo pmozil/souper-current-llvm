@@ -413,6 +413,8 @@ set(SOUPER_INFER_FILES
   lib/Infer/EnumerativeSynthesis.cpp
   include/souper/Infer/EnumerativeSynthesis.h
   lib/Infer/AliveDriver.cpp
+  lib/Infer/MemInterpreter.cpp
+  lib/Infer/MemorySynthesis.cpp
   include/souper/Infer/AliveDriver.h
   lib/Infer/Pruning.cpp
   include/souper/Infer/Pruning.h
@@ -434,6 +436,8 @@ add_library(souperInfer STATIC
 
 set(SOUPER_INST_FILES
   lib/Inst/Inst.cpp
+  lib/Inst/MemSchedule.cpp
+  lib/Inst/MemCost.cpp
   include/souper/Inst/Inst.h
   include/souper/Inst/InstGraph.h
 )
@@ -492,6 +496,7 @@ add_library(souperTool STATIC
 
 set(SOUPER_CODEGEN_FILES
   lib/Codegen/Codegen.cpp
+  lib/Codegen/MemoryCodegen.cpp
   include/souper/Codegen/Codegen.h
 )
 

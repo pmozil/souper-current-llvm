@@ -1,0 +1,20 @@
+; RUN: %souper-check %s | %FileCheck %s
+; CHECK: ; LGTM
+; Two loaded values are live-outs (the region returns a struct in Alive2).
+%p:i64 = var (ptr) (align=4) (dereferenceable=4)
+%q:i64 = var (ptr) (align=4) (dereferenceable=4)
+%r:i64 = var (ptr) (align=4) (dereferenceable=4)
+%v:i32 = var
+%m0 = memstate
+%s = store %m0, %p, %v (align=4)
+%a1:i32 = load %s, %q (align=4)
+%b1:i32 = load %s, %r (align=4)
+%lhs = memresult %s, %a1, %b1
+%a0:i32 = load %m0, %q (align=4)
+%b0:i32 = load %m0, %r (align=4)
+%rhs = memresult %s, %a0, %b0
+%c1:i1 = ne %p, %q
+%c2:i1 = ne %p, %r
+pc %c1 1:i1
+pc %c2 1:i1
+cand %lhs %rhs

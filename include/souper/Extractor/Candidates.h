@@ -24,10 +24,12 @@
 #include "souper/Inst/Inst.h"
 #include <map>
 #include <memory>
+#include <set>
 #include <vector>
 
 namespace llvm {
 
+class AAResults;
 class BasicBlock;
 class LoopInfo;
 class Function;
@@ -110,6 +112,61 @@ FunctionCandidateSet ExtractCandidates(
     const ExprBuilderOptions &Opts = ExprBuilderOptions());
 
 llvm::APInt getSetSize(const llvm::ConstantRange &R);
+
+struct MemPlan {
+  std::vector<unsigned> Order;
+  // load index -> store index whose value replaces it
+  std::map<unsigned, unsigned> Forward;
+  // store indices to delete
+  std::set<unsigned> DeadStores;
+};
+
+struct MemoryRegionCandidate {
+  llvm::BasicBlock *BB = nullptr;
+  std::vector<llvm::Instruction *> Window;
+  /// Only the loads and stores of the window, in original order.
+  std::vector<llvm::Instruction *> MemOps;
+  /// Deps[J] lists the earlier ops
+  /// (indices into MemOps) that must stay before J.
+  std::vector<std::vector<unsigned>> Deps;
+  /// First instruction after the window;
+  /// rewritten code is placed before it.
+  llvm::Instruction *Anchor = nullptr;
+  InstMapping Mapping;
+  /// Empty for now, path conditions
+  /// that read memory are not supported.
+  std::vector<InstMapping> PCs;
+  BlockPCs BPCs;
+  /// Index of the extractor-internal
+  /// context that owns this region's Vars.
+  size_t Id = 0;
+};
+
+class MemoryRegionExtractor {
+public:
+  MemoryRegionExtractor(llvm::Function &F, const llvm::LoopInfo &LI,
+                        llvm::DemandedBits &DB, llvm::LazyValueInfo &LVI,
+                        llvm::ScalarEvolution &SE, llvm::TargetLibraryInfo &TLI,
+                        llvm::AAResults &AA, InstContext &IC);
+  ~MemoryRegionExtractor();
+
+  /// All regions with at least two memory ops
+  /// (one of them a store), each at
+  /// most MaxWindowOps long.
+  std::vector<MemoryRegionCandidate> extract(unsigned MaxWindowOps);
+
+  /// Rebuild the region for a plan. Shares
+  /// Var Insts with the candidate's LHS,
+  /// so LHS and RHS have the same inputs.
+  /// nullptr if the plan cannot be
+  /// expressed (e. g. a forwarded load
+  /// is used before its store).
+  Inst *build(const MemoryRegionCandidate &C, const MemPlan &P);
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> PImpl;
+};
 
 }
 

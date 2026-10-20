@@ -528,6 +528,16 @@ namespace souper {
       return Args[0];
     }
 
+    case Inst::PtrAdd:
+    case Inst::PtrAddInBounds:
+      return {ARG0 + ARG1};
+
+    case Inst::MemState:
+    case Inst::Load:
+    case Inst::Store:
+    case Inst::MemResult:
+      llvm::report_fatal_error("memory instructions are run by runMemSchedule");
+
     default:
       llvm::report_fatal_error(("unimplemented instruction kind " +
                                std::string(Inst::getKindName(Inst->K)) +

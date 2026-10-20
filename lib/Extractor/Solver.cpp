@@ -410,6 +410,12 @@ public:
                               bool AllowMultipleRHSs, InstContext &IC) {
     std::error_code EC;
 
+    // Memory regions are searched by synthesizeMemoryReorders,
+    // not by the expression synthesizers; RHSs stays empty.
+    // No expression RHS exists.
+    if (containsMemory(LHS))
+      return EC;
+
     // FIXME -- it's a bit messy to have this custom logic here
     if (LHS->HarvestKind == HarvestType::HarvestedFromUse) {
       Inst *C = IC.createSynthesisConstant(LHS->Width, /*SynthesisConstID=*/1, LHS->IsFloat);
@@ -488,7 +494,8 @@ public:
                           InstMapping Mapping, bool &IsValid,
                           std::vector<std::pair<Inst *, llvm::APInt>> *Model)
   override {
-    if (UseAlive || containsFloat(Mapping.LHS) || containsFloat(Mapping.RHS)) {
+    if (UseAlive || containsFloat(Mapping.LHS) || containsFloat(Mapping.RHS) ||
+        containsMemory(Mapping.LHS) || containsMemory(Mapping.RHS)) {
       IsValid = isTransformationValid(Mapping.LHS, Mapping.RHS, PCs, BPCs, IC);
       return std::error_code();
     }

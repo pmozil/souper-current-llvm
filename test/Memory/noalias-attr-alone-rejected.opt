@@ -1,0 +1,14 @@
+; RUN: %souper-check %s | %FileCheck %s
+; CHECK: Invalid
+; noalias on the arguments does not by itself tell Alive2 they differ; the
+; extractor passes what alias analysis proved as a path condition instead.
+%p:i64 = var (ptr) (align=4) (dereferenceable=4) (noalias)
+%q:i64 = var (ptr) (align=4) (dereferenceable=4) (noalias)
+%v:i32 = var
+%m0 = memstate
+%s = store %m0, %p, %v (align=4)
+%x1:i32 = load %s, %q (align=4)
+%lhs = memresult %s, %x1
+%x0:i32 = load %m0, %q (align=4)
+%rhs = memresult %s, %x0
+cand %lhs %rhs

@@ -49,6 +49,40 @@ struct Block {
   std::vector<Inst *> PredVars;
 };
 
+enum class MemOrdering : uint8_t {
+  NotAtomic, Unordered, Monotonic, Acquire, Release, AcqRel, SeqCst
+};
+
+/// Per-access attributes.
+/// Part of the node's identity (see Inst::Profile).
+struct MemAttrs {
+  uint32_t Align = 1;
+  MemOrdering Ordering = MemOrdering::NotAtomic;
+  bool Volatile = false;
+  bool NonTemporal = false;
+  uint32_t NoAliasScope = 0;   // opaque id, 0 = none
+
+  bool isSimple() const {
+    return !Volatile && Ordering == MemOrdering::NotAtomic;
+  }
+  void Profile(llvm::FoldingSetNodeID &ID) const {
+    ID.AddInteger(Align);
+    ID.AddInteger((unsigned)Ordering);
+    ID.AddBoolean(Volatile);
+    ID.AddBoolean(NonTemporal);
+    ID.AddInteger(NoAliasScope);
+  }
+};
+
+/// Facts about a pointer-typed Var.
+/// Vars are not uniqued, so no Profile.
+struct PtrFacts {
+  uint32_t Align = 1;
+  uint64_t DerefBytes = 0;
+  bool NonNull = false;
+  bool NoAlias = false;   // only set when proven (noalias arg)
+};
+
 struct Inst : llvm::FoldingSetNode {
   typedef enum {
     Const,
@@ -150,6 +184,13 @@ struct Inst : llvm::FoldingSetNode {
     USubSat,
     Freeze,
 
+    MemState,
+    Load,
+    Store,
+    MemResult,
+    PtrAdd,
+    PtrAddInBounds,
+
     ReservedConst,
     ReservedInst,
 
@@ -160,6 +201,9 @@ struct Inst : llvm::FoldingSetNode {
   unsigned Number;
   unsigned Width;
   bool IsFloat = false;
+  MemAttrs MA;
+  bool IsPtr = false;
+  PtrFacts PF;
   Block *B;
   bool Available = true;
   llvm::APInt Val;
@@ -236,6 +280,12 @@ struct Inst : llvm::FoldingSetNode {
   }
 
   static bool isFloatKind(Kind K);
+
+  static bool isMemKind(Kind K) {
+    return K == MemState || K == Load || K == Store || K == MemResult ||
+           K == PtrAdd || K == PtrAddInBounds;
+  }
+  static bool isMemToken(Kind K) { return K == MemState || K == Store; }
 };
 
 /// A mapping from an Inst to a replacement. This may either represent a
@@ -321,6 +371,16 @@ public:
   Inst *getInst(Inst::Kind K, unsigned Width, const std::vector<Inst *> &Ops,
                 llvm::APInt DemandedBits, bool Available, bool isFloat = false);
 
+  Inst *getMemState();
+  Inst *getLoad(Inst *Mem, Inst *Ptr, unsigned Width, const MemAttrs &MA);
+  Inst *getStore(Inst *Mem, Inst *Ptr, Inst *Val, const MemAttrs &MA);
+  Inst *getMemResult(Inst *Mem, const std::vector<Inst *> &LiveOuts);
+  Inst *getPtrAdd(Inst *Ptr, Inst *Off, bool InBounds);
+  Inst *createPtrVar(unsigned PtrBits, llvm::StringRef Name, const PtrFacts &PF);
+  // Also used by getInstCopy/instJoin.
+  Inst *getMemInst(Inst::Kind K, unsigned Width, std::vector<Inst *> Ops,
+                   const MemAttrs &MA, bool IsPtr);
+
   std::vector<Inst *> getVariables() const;
   std::vector<Inst *> getVariablesFor(Inst *Root) const;
 };
@@ -402,6 +462,7 @@ void separatePCs(const std::vector<InstMapping> &PCs,
 std::vector<Block *> getBlocksFromPhis(Inst *I);
 
 bool containsFloat(const Inst *Root);
+bool containsMemory(const Inst *Root);   // any MemState/Load/Store/MemResult
 
 }
 
