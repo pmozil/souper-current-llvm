@@ -23,7 +23,7 @@ using namespace souper;
 int souper::memOpCost(const Inst *I, const MemCostContext &Ctx) {
   if (Ctx.OpCostHook)
     if (std::optional<int> C = Ctx.OpCostHook(I))
-      return *C;
+      return *C * Ctx.OpCostScale;
   if (I->K != Inst::Load && I->K != Inst::Store)
     return 0;
   int Cost = I->K == Inst::Load ? MemCostDefaults::LoadBase
@@ -85,7 +85,7 @@ int souper::memScheduleCost(const MemSchedule &S, const MemCostContext &Ctx) {
       }
     unsigned Dist = Use - I;
     if (Dist < Ctx.LoadLatency)
-      Total += (Ctx.LoadLatency - Dist) * MemCostDefaults::UseStallPenalty;
+      Total += (Ctx.LoadLatency - Dist) * Ctx.UseStallPenalty;
   }
 
   // (2) Adjacent accesses to consecutive addresses can be combined.
@@ -103,12 +103,25 @@ int souper::memScheduleCost(const MemSchedule &S, const MemCostContext &Ctx) {
     splitPtr(B->Ops[1], BaseB, OffB);
     int64_t Bytes = (WA + 7) / 8;
     if (BaseA == BaseB && (OffB - OffA == Bytes || OffA - OffB == Bytes))
-      Total -= MemCostDefaults::AdjacentBonus;
+      Total -= Ctx.AdjacentBonus;
   }
 
   if (Ctx.ExtraScheduleCost)
     Total += Ctx.ExtraScheduleCost(S);
   return Total;
+}
+
+void souper::calibrateMemCost(MemCostContext &Ctx, int SourceLoadCost) {
+  if (SourceLoadCost <= 0)
+    return;
+  const int Base = MemCostDefaults::LoadBase;
+  if (SourceLoadCost <= Base) {
+    Ctx.OpCostScale = std::max(1, (Base + SourceLoadCost / 2) / SourceLoadCost);
+  } else {
+    int Ratio = std::max(1, (SourceLoadCost + Base / 2) / Base);
+    Ctx.UseStallPenalty = MemCostDefaults::UseStallPenalty * Ratio;
+    Ctx.AdjacentBonus = MemCostDefaults::AdjacentBonus * Ratio;
+  }
 }
 
 int souper::memCost(Inst *Root, const MemCostContext &Ctx) {

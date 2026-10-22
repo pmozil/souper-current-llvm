@@ -16,16 +16,55 @@
 // translation unit, because ExprBuilder lives in an anonymous namespace there.
 // It implements MemoryRegionExtractor (declared in Candidates.h).
 //
-// What a "region" is: a run of instructions in one basic block that contains
-// no barrier. A barrier is anything that is not a plain, integer, byte-sized
+// What a "region" is: a run of instructions in one basic
+// block that contains
+// no barrier. A barrier is anything that is not a
+// plain, integer, byte-sized
 // load or store but touches memory or may not return (volatile/atomic
-// accesses, fences, calls, memcpy, pointer- or float-typed accesses), plus PHIs
-// and terminators.
+// accesses, fences, calls, memcpy, pointer- or float-typed accesses),
+// plus PHIs and terminators.
 
 namespace {
 
+bool isPureValueIntrinsic(const CallBase &CB) {
+  auto *II = dyn_cast<IntrinsicInst>(&CB);
+  if (!II || II->isConvergent() || II->isStrictFP())
+    return false;
+  switch (II->getIntrinsicID()) {
+  case Intrinsic::ctpop:
+  case Intrinsic::ctlz:
+  case Intrinsic::cttz:
+  case Intrinsic::bswap:
+  case Intrinsic::bitreverse:
+  case Intrinsic::fshl:
+  case Intrinsic::fshr:
+  case Intrinsic::abs:
+  case Intrinsic::smax:
+  case Intrinsic::smin:
+  case Intrinsic::umax:
+  case Intrinsic::umin:
+  case Intrinsic::uadd_sat:
+  case Intrinsic::usub_sat:
+  case Intrinsic::sadd_sat:
+  case Intrinsic::ssub_sat:
+  case Intrinsic::uadd_with_overflow:
+  case Intrinsic::usub_with_overflow:
+  case Intrinsic::sadd_with_overflow:
+  case Intrinsic::ssub_with_overflow:
+  case Intrinsic::umul_with_overflow:
+  case Intrinsic::smul_with_overflow:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool isDefaultAddrSpace(const Value *Ptr) {
+  return Ptr->getType()->getPointerAddressSpace() == 0;
+}
+
 bool isRegionBarrier(const Instruction &I) {
-  if (isa<PHINode>(I) || I.isTerminator())
+  if (isa<PHINode>(I) || I.isTerminator() || I.isEHPad())
     return true;
   if (!isGuaranteedToTransferExecutionToSuccessor(&I))
     return true;
@@ -34,10 +73,17 @@ bool isRegionBarrier(const Instruction &I) {
            T->getIntegerBitWidth() <= 64;
   };
   if (auto *L = dyn_cast<LoadInst>(&I))
-    return !L->isSimple() || !OkTy(L->getType());
+    return !L->isSimple() || !OkTy(L->getType()) ||
+           !isDefaultAddrSpace(L->getPointerOperand());
   if (auto *S = dyn_cast<StoreInst>(&I))
-    return !S->isSimple() || !OkTy(S->getValueOperand()->getType());
-  return I.mayReadOrWriteMemory();
+    return !S->isSimple() || !OkTy(S->getValueOperand()->getType()) ||
+           !isDefaultAddrSpace(S->getPointerOperand());
+  if (auto *CB = dyn_cast<CallBase>(&I))
+    return !isPureValueIntrinsic(*CB);
+  if (isa<FenceInst>(I) || isa<AtomicRMWInst>(I) ||
+      isa<AtomicCmpXchgInst>(I) || isa<VAArgInst>(I))
+    return true;
+  return I.mayReadOrWriteMemory() || I.mayHaveSideEffects();
 }
 
 uint32_t clampAlign(Align A) {
@@ -64,7 +110,6 @@ unsigned accessBits(const Instruction *I) {
   return cast<StoreInst>(I)->getValueOperand()->getType()->getIntegerBitWidth();
 }
 
-// Does I (transitively, inside the window) read a value loaded in the window?
 bool dependsOnWindowLoad(Instruction *I, const std::set<Instruction *> &Win,
                          std::set<Instruction *> &Seen) {
   if (!Win.count(I))
@@ -94,8 +139,6 @@ struct MemoryRegionExtractor::Impl {
   InstContext &IC;
   const DataLayout &DL;
   ExprBuilderOptions Opts;
-  // One context per candidate: it owns the Var Insts every plan for that
-  // candidate must share.
   std::vector<std::unique_ptr<ExprBuilderContext>> BaseEBCs;
 
   Impl(Function &F, const LoopInfo &LI, DemandedBits &DB, LazyValueInfo &LVI,
@@ -115,11 +158,6 @@ struct MemoryRegionExtractor::Impl {
                      std::vector<MemoryRegionCandidate> &Out);
 };
 
-// Builds the region's Souper DAG by walking the plan: loads and stores are
-// created in plan order, threading the memory token, and every pure
-// instruction is built on demand by ExprBuilder. Every window load is a
-// live-out. That is sound because every pure value is a function of the inputs
-// and the loads, so equal loads imply equal pure values.
 Inst *MemoryRegionExtractor::Impl::buildRegion(const MemoryRegionCandidate &C,
                                                const MemPlan &P,
                                                ExprBuilderContext &EBC,
@@ -211,9 +249,6 @@ void MemoryRegionExtractor::Impl::computeDeps(MemoryRegionCandidate &C) {
       D.push_back(I);
   };
 
-  // 1. Memory edges: at least one store, and AA cannot prove no-alias. Alive2
-  //    cannot see TBAA or other metadata, so query without it. Orders justified
-  //    only by metadata would be proposed and then rejected.
   for (unsigned J = 0; J < N; ++J) {
     for (unsigned I = 0; I < J; ++I) {
       if (isa<LoadInst>(C.MemOps[I]) && isa<LoadInst>(C.MemOps[J]))
@@ -223,9 +258,6 @@ void MemoryRegionExtractor::Impl::computeDeps(MemoryRegionCandidate &C) {
     }
   }
 
-  // 2. Data edges: from every window load that feeds J's pointer or stored
-  //    value (walking only through non-memory window instructions). This stops
-  //    a store being hoisted above the load that produces its value.
   for (unsigned J = 0; J < N; ++J) {
     std::set<Instruction *> Seen;
     std::function<void(Value *)> Walk = [&](Value *V) {
@@ -255,13 +287,6 @@ void MemoryRegionExtractor::Impl::computeDeps(MemoryRegionCandidate &C) {
 
 static Value *ptrOperandOf(Instruction *I);
 
-// Every access in the window is UB if its pointer is invalid, and nothing in a
-// window can allocate or free memory (those are barriers). So in every
-// execution where the original code is UB-free, each pointer that is accessed
-// directly was already valid for that many bytes, and aligned, when the window
-// began. Saying so to Alive2 is sound (it only excludes executions where the
-// source is UB anyway) and shrinks its search a great deal. Without it, queries
-// that take a second can run past Alive2's 60 s limit.
 void MemoryRegionExtractor::Impl::strengthenPtrFacts(MemoryRegionCandidate &C,
                                                      ExprBuilderContext &EBC) {
   ExprBuilder EB(Opts, M, LI, DB, LVI, SE, TLI, IC, EBC);
@@ -290,17 +315,6 @@ static uint32_t alignOfAccess(Instruction *I) {
   return clampAlign(cast<StoreInst>(I)->getAlign());
 }
 
-// Alive2 does not know what LLVM's alias analysis knows: two pointer arguments
-// may be equal even when both are marked noalias, so a reorder AA proved legal
-// would be rejected. Tell it, as a path condition, what AA proved: p != q for
-// every pair of accesses AA says are disjoint.
-//
-// Only the cheap, exact form is emitted: both accesses have the same width and
-// are aligned to it, so distinct addresses cannot overlap. A size-aware
-// condition ("q - p >= size") is correct too but takes Alive2's solver more than
-// a minute, so those pairs are skipped (the reorder then simply fails to verify).
-// Pairs with the same base and constant offsets need no condition: Alive2 sees
-// that for itself.
 void MemoryRegionExtractor::Impl::addAliasPCs(MemoryRegionCandidate &C,
                                               ExprBuilderContext &EBC) {
   ExprBuilder EB(Opts, M, LI, DB, LVI, SE, TLI, IC, EBC);
@@ -400,18 +414,19 @@ MemoryRegionExtractor::extract(unsigned MaxWindowOps) {
     for (Instruction &I : BB) {
       if (isa<PHINode>(I))
         continue;
+      if (I.isDebugOrPseudoInst())
+        continue;
       if (isRegionBarrier(I)) {
-        Flush(&I);               // the barrier (or terminator) is the anchor
+        Flush(&I);
         continue;
       }
       bool IsMem = isa<LoadInst>(I) || isa<StoreInst>(I);
       if (IsMem && MemCount == MaxWindowOps)
-        Flush(&I);               // window full; I starts the next one
+        Flush(&I);
       Cur.push_back(&I);
       if (IsMem)
         ++MemCount;
     }
-    // Every block ends in a terminator, which flushed the last window.
   }
   return Out;
 }
@@ -419,8 +434,6 @@ MemoryRegionExtractor::extract(unsigned MaxWindowOps) {
 Inst *MemoryRegionExtractor::build(const MemoryRegionCandidate &C,
                                    const MemPlan &P) {
   ExprBuilderContext EBC;
-  // Share inputs with the LHS: Vars and constants carry over, everything else
-  // is rebuilt for this plan.
   for (auto &KV : PImpl->BaseEBCs[C.Id]->InstMap) {
     Inst *I = KV.second;
     if (I && (I->K == Inst::Var || I->K == Inst::Const))
@@ -431,10 +444,12 @@ Inst *MemoryRegionExtractor::build(const MemoryRegionCandidate &C,
   return Ok ? R : nullptr;
 }
 
-// ExprBuilder::buildMemGEP: byte-offset form of a GEP, using the current
-// GEPOperator API (replaces the dead, #if 0'd buildGEP above).
 Inst *ExprBuilder::buildMemGEP(GetElementPtrInst *GEP) {
   unsigned PW = DL.getPointerSizeInBits(GEP->getPointerAddressSpace());
+  if (GEP->getPointerAddressSpace() != 0) {
+    Invalid = true;                 // only address space 0 is modelled
+    return makeArrayRead(GEP);
+  }
   APInt ConstOff(PW, 0);
   SmallMapVector<Value *, APInt, 4> VarOffs;
   Inst *Ptr = nullptr;

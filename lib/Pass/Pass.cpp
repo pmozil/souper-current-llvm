@@ -85,6 +85,10 @@ static cl::opt<unsigned> MemPruneTrials("souper-mem-prune-trials", cl::init(32),
 static cl::opt<unsigned> MemMaxVerify("souper-mem-max-verify", cl::init(20),
     cl::desc("Max Alive2 calls per memory region (default=20)"));
 
+static cl::opt<unsigned> MemLoadLatency("souper-mem-load-latency",
+    cl::init(MemCostDefaults::LoadLatency),
+    cl::desc("Schedule slots a load needs before its use (default=4)"));
+
 static cl::opt<bool> MemUseTTI("souper-mem-use-tti", cl::init(false),
     cl::desc("Use TargetTransformInfo for per-access costs (default=false)"));
 
@@ -120,12 +124,8 @@ static void eliminateDeadCode(Function &F) {
   FPM.run(F, FAM);
 }
 
-// Per-access costs from the target.
-// TTI reports reciprocal-throughput costs,
-// which are not on the same scale as the built-in
-// table or LoadLatency; when this is on,
-// scale MemCostContext::LoadLatency to match.
-static MemCostContext makeTTIMemCostContext(TargetTransformInfo &TTI) {
+static MemCostContext makeTTIMemCostContext(TargetTransformInfo &TTI,
+                                            LLVMContext &Ctx) {
   MemCostContext C;
   C.OpCostHook = [&TTI](const souper::Inst *I) -> std::optional<int> {
     if ((I->K != souper::Inst::Load && I->K != souper::Inst::Store) ||
@@ -153,6 +153,11 @@ static MemCostContext makeTTIMemCostContext(TargetTransformInfo &TTI) {
       return std::nullopt;
     return (int)Cost.getValue();
   };
+  InstructionCost Probe = TTI.getMemoryOpCost(
+      Instruction::Load, Type::getInt32Ty(Ctx), Align(4), /*AddressSpace=*/0,
+      TargetTransformInfo::TCK_RecipThroughput);
+  if (Probe.isValid())
+    calibrateMemCost(C, (int)Probe.getValue());
   return C;
 }
 
@@ -264,7 +269,9 @@ public:
     O.PruneTrials = MemPruneTrials;
     O.MaxVerify = MemMaxVerify;
     if (MemUseTTI)
-      O.Cost = makeTTIMemCostContext(TTI);
+      O.Cost = makeTTIMemCostContext(TTI, F.getContext());
+    if (MemLoadLatency.getNumOccurrences())
+      O.Cost.LoadLatency = MemLoadLatency;
 
     for (auto &C : X.extract(MemMaxWindow)) {
       if (DebugLevel > 1) {

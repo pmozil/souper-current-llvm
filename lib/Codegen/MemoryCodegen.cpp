@@ -25,7 +25,7 @@ bool souper::applyMemoryPlan(const MemoryRegionCandidate &C, const MemPlan &P) {
 
   // Which instructions disappear, and which loads take a stored value.
   std::set<Instruction *> Dropped;
-  std::map<Value *, Value *> Fwd;               // forwarded load -> stored value
+  std::map<Value *, Value *> Fwd; // forwarded load -> stored value
   for (unsigned S : P.DeadStores)
     Dropped.insert(C.MemOps[S]);
   for (auto &KV : P.Forward) {
@@ -36,9 +36,21 @@ bool souper::applyMemoryPlan(const MemoryRegionCandidate &C, const MemPlan &P) {
     Fwd[LI] = SI->getValueOperand();
     Dropped.insert(LI);
   }
+
+  std::map<Value *, Value *> Final;
+  for (auto &KV : Fwd) {
+    Value *V = KV.second;
+    std::set<Value *> Seen{KV.first};
+    for (auto It = Fwd.find(V); It != Fwd.end(); It = Fwd.find(V)) {
+      if (!Seen.insert(V).second)
+        return false;            // cycle: cannot happen for valid input
+      V = It->second;
+    }
+    Final[KV.first] = V;
+  }
   auto Subst = [&](Value *V) {
-    auto It = Fwd.find(V);
-    return It == Fwd.end() ? V : It->second;
+    auto It = Final.find(V);
+    return It == Final.end() ? V : It->second;
   };
 
   // Every in-window instruction that survives must be placed exactly once.
@@ -49,17 +61,14 @@ bool souper::applyMemoryPlan(const MemoryRegionCandidate &C, const MemPlan &P) {
       return;
     for (Value *Op : I->operands())
       if (auto *OI = dyn_cast<Instruction>(Subst(Op)))
-        Place(OI);               // operand definitions first, original order
+        Place(OI);
     Seq.push_back(I);
   };
   for (unsigned Idx : P.Order)
     Place(C.MemOps[Idx]);
-  for (Instruction *I : C.Window)  // stragglers: pure values used only after the window
+  for (Instruction *I : C.Window)
     Place(I);
 
-  // Dry run: every in-window operand must precede its user. Operands defined
-  // outside the window dominate all of it, and the window keeps its extent,
-  // so they need no check.
   std::map<Instruction *, unsigned> Pos;
   for (unsigned I = 0; I < Seq.size(); ++I)
     Pos[Seq[I]] = I;
@@ -69,7 +78,6 @@ bool souper::applyMemoryPlan(const MemoryRegionCandidate &C, const MemPlan &P) {
         if (InWin.count(OI) && !Dropped.count(OI) && Pos[OI] >= Pos[I])
           return false;
 
-  // The memory ops must appear in exactly the planned order.
   {
     std::vector<Instruction *> Want;
     for (unsigned Idx : P.Order)
@@ -82,12 +90,11 @@ bool souper::applyMemoryPlan(const MemoryRegionCandidate &C, const MemPlan &P) {
       return false;
   }
 
-  // Commit. Forwarded loads: redirect their users, then erase.
-  for (auto &KV : Fwd)
+  for (auto &KV : Final)
     KV.first->replaceAllUsesWith(KV.second);
   for (Instruction *D : Dropped)
     D->eraseFromParent();
   for (Instruction *I : Seq)
-    I->moveBefore(C.Anchor->getIterator());   // keeps metadata and debug info
+    I->moveBefore(C.Anchor->getIterator());
   return true;
 }

@@ -273,6 +273,8 @@ Inst *ExprBuilder::makeArrayRead(Value *V) {
   if (MemMode) {
     Opaque.push_back(V);
     if (V->getType()->isPointerTy()) {
+      if (V->getType()->getPointerAddressSpace() != 0)
+        Invalid = true; // only address space 0 is modelled
       I->IsPtr = true;
       I->PF.Align = (uint32_t)std::min<uint64_t>(
           V->getPointerAlignment(DL).value(), 1u << 30);
@@ -838,7 +840,7 @@ void emplace_back_dedup(std::vector<InstMapping> &PCs, Inst *LHS, Inst *RHS) {
 
 void ExprBuilder::addPC(BasicBlock *BB, BasicBlock *Pred,
                         std::vector<InstMapping> &PCs) {
-  if (auto Branch = dyn_cast<BranchInst>(Pred->getTerminator())) {
+  if (auto Branch = dyn_cast<CondBrInst>(Pred->getTerminator())) {
     if (isa<CondBrInst>(Branch)) {
       emplace_back_dedup(
           PCs, get(dyn_cast<CondBrInst>(Branch)),

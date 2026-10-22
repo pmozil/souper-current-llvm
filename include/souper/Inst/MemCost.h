@@ -29,30 +29,32 @@ constexpr int UseStallPenalty = 1;    // per missing slot
 constexpr int AdjacentBonus = 1;      // adjacent, same-base, consecutive accesses
 }
 
-/// Everything the memory cost model may consult. Both hooks are optional, so
-/// richer models (TTI, locality, register pressure) plug in without changing
-/// any caller.
+// Everything the memory cost model may consult.
+// Both hooks are optional, so richer models plug
+// in without changing any caller.
 struct MemCostContext {
-  /// Plug-in 1: override one access's cost (e.g. with TargetTransformInfo).
-  /// Return nullopt to fall back to the built-in table.
+  // Plug-in 1: override one access's cost.
+  // Return nullopt to fall back to the built-in table.
   std::function<std::optional<int>(const Inst *)> OpCostHook;
 
-  /// Plug-in 2: an extra whole-schedule term (locality, register pressure...).
+  // Plug-in 2: an extra whole-schedule term.
   std::function<int(const MemSchedule &)> ExtraScheduleCost;
 
   unsigned LoadLatency = MemCostDefaults::LoadLatency;
+
+  int UseStallPenalty = MemCostDefaults::UseStallPenalty;
+  int AdjacentBonus = MemCostDefaults::AdjacentBonus;
+  int OpCostScale = 1;
 };
 
-/// Cost of one load or store (0 for anything else).
+void calibrateMemCost(MemCostContext &Ctx, int SourceLoadCost);
+
 int memOpCost(const Inst *I, const MemCostContext &Ctx);
 
-/// Cost of a linearised region: per-access costs plus schedule terms.
 int memScheduleCost(const MemSchedule &S, const MemCostContext &Ctx);
 
-/// Cost of a region root. A very large value if it cannot be linearised.
 int memCost(Inst *MemResultRoot, const MemCostContext &Ctx);
 
-/// cost(LHS) - cost(RHS): positive means RHS is cheaper.
 int memBenefit(Inst *LHS, Inst *RHS, const MemCostContext &Ctx);
 
 }
