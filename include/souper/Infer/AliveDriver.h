@@ -28,6 +28,8 @@ namespace souper {
 
 extern unsigned AliveMemNameSalt;
 extern bool AliveLastTimedOut;
+extern unsigned AliveMemAttempts;
+extern unsigned AliveMemRetries;
 
 // TODO: Rename to AliveBuilder if we implement the ExprBuilder API in future
 class AliveDriver {

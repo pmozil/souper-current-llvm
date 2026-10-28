@@ -10,6 +10,6 @@ define i32 @f(ptr align 4 dereferenceable(4) %p, ptr align 4 dereferenceable(4) 
   %r = add i32 %a, %b
   ret i32 %r
 }
-; CHECK-NOT: load
+; CHECK-NOT: = load
 ; CHECK: store i32 %v, ptr %p
 ; CHECK-NEXT: store i32 %v, ptr %q

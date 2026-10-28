@@ -42,6 +42,7 @@
 #include "souper/KVStore/KVStore.h"
 #include "souper/SMTLIB2/Solver.h"
 #include "souper/Codegen/Codegen.h"
+#include "souper/Infer/MemoryOptions.h"
 #include "souper/Infer/MemorySynthesis.h"
 #include "souper/Tool/GetSolver.h"
 #include "souper/Tool/CandidateMapUtils.h"
@@ -69,25 +70,6 @@ DebugFlagParser("souper-debug-level",
      "The larger the number is, the more fine-grained debug "
      "information will be printed."),
      cl::location(DebugLevel), cl::init(1));
-
-static cl::opt<bool> MemOpt("souper-mem-opt", cl::init(false),
-    cl::desc("Reorder, forward and delete memory operations (default=false)"));
-
-static cl::opt<unsigned> MemMaxWindow("souper-mem-max-window", cl::init(12),
-    cl::desc("Max loads+stores per memory region (default=12)"));
-
-static cl::opt<unsigned> MemMaxOrders("souper-mem-max-orders", cl::init(2000),
-    cl::desc("Max enumerated orders per move set (default=2000)"));
-
-static cl::opt<unsigned> MemPruneTrials("souper-mem-prune-trials", cl::init(32),
-    cl::desc("Concrete trials before asking Alive2 (default=32)"));
-
-static cl::opt<unsigned> MemMaxVerify("souper-mem-max-verify", cl::init(20),
-    cl::desc("Max Alive2 calls per memory region (default=20)"));
-
-static cl::opt<unsigned> MemLoadLatency("souper-mem-load-latency",
-    cl::init(MemCostDefaults::LoadLatency),
-    cl::desc("Schedule slots a load needs before its use (default=4)"));
 
 static cl::opt<bool> MemUseTTI("souper-mem-use-tti", cl::init(false),
     cl::desc("Use TargetTransformInfo for per-access costs (default=false)"));
@@ -258,22 +240,19 @@ public:
   // Alive2-verified schedule and applies it.
   // Returns true if the IR changed.
   bool runMemoryOpt(Function &F, FunctionAnalysisManager &FAM,
+                    const MemoryOptFlags &MF,
                     const LoopInfo &LI, DemandedBits &DB, LazyValueInfo &LVI,
                     ScalarEvolution &SE, TargetLibraryInfo &TLI,
                     InstContext &IC) {
     auto &AA = FAM.getResult<AAManager>(F);
     auto &TTI = FAM.getResult<TargetIRAnalysis>(F);
     MemoryRegionExtractor X(F, LI, DB, LVI, SE, TLI, AA, IC);
-    MemSynthOptions O;
-    O.MaxOrders = MemMaxOrders;
-    O.PruneTrials = MemPruneTrials;
-    O.MaxVerify = MemMaxVerify;
+    MemSynthOptions O = MF.Synth;
     if (MemUseTTI)
       O.Cost = makeTTIMemCostContext(TTI, F.getContext());
-    if (MemLoadLatency.getNumOccurrences())
-      O.Cost.LoadLatency = MemLoadLatency;
+    MF.applyTo(O.Cost);
 
-    for (auto &C : X.extract(MemMaxWindow)) {
+    for (auto &C : X.extract(MF.MaxWindow)) {
       if (DebugLevel > 1) {
         errs() << "\n; memory region in " << F.getName() << " ("
                << C.MemOps.size() << " accesses), cost "
@@ -342,7 +321,9 @@ public:
       FM2.run(F, FAM2);
     }
 
-    if (MemOpt && runMemoryOpt(F, FAM, LI, DB, LVI, SE, TLI, IC)) {
+    const MemoryOptFlags MemFlags = getMemoryOptFlags();
+    if (MemFlags.Enabled &&
+        runMemoryOpt(F, FAM, MemFlags, LI, DB, LVI, SE, TLI, IC)) {
       FAM.invalidate(F, PreservedAnalyses::none());   // instruction order changed
       return true;
     }

@@ -6,5 +6,5 @@ define i24 @f(ptr align 4 dereferenceable(4) %p, i24 %v) {
   ret i24 %x
 }
 ; CHECK: store i24 %v
-; CHECK-NOT: load
+; CHECK-NOT: = load
 ; CHECK: ret i24 %v

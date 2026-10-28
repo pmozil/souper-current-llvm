@@ -297,22 +297,10 @@ std::error_code souper::synthesizeMemoryReorders(
     }
     ++Calls;
     ++St.Verified;
-    // A timeout says nothing about validity, and the
-    // solver's time depends on incidental input names,
-    // so retry under a different naming scheme. A real
-    // counterexample is never retried.
-    // Salts are ordered by how often they solved the queries measured.
-    static const unsigned Salts[] = {2, 4, 7, 0, 1, 3, 5, 6};
-    bool Valid = false;
-    for (unsigned Try = 0; Try < O.AliveAttempts; ++Try) {
-      AliveMemNameSalt = Salts[Try % 8];
-      if (Try)
-        ++St.Retries;
-      Valid = isTransformationValid(Orig, Pl.RHS, C.PCs, C.BPCs, IC);
-      if (Valid || !AliveLastTimedOut)
-        break;
-    }
-    AliveMemNameSalt = 0;
+    AliveMemAttempts = O.AliveAttempts;
+    const unsigned RetriesBefore = AliveMemRetries;
+    bool Valid = isTransformationValid(Orig, Pl.RHS, C.PCs, C.BPCs, IC);
+    St.Retries += AliveMemRetries - RetriesBefore;
     if (Valid) {
       Verified.push_back(Pl.P);
       break;

@@ -19,6 +19,7 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
@@ -27,7 +28,9 @@
 #include "souper/Extractor/Candidates.h"
 #include "souper/SMTLIB2/Solver.h"
 #include "souper/Tool/CandidateMapUtils.h"
+#include "souper/Infer/MemoryOptions.h"
 #include "souper/Tool/GetSolver.h"
+#include "souper/Tool/MemoryCandidateUtils.h"
 #include <iostream>
 
 using namespace llvm;
@@ -60,6 +63,15 @@ Check("check", cl::desc("Check input for expected results"),
 static cl::opt<bool>
 Cost("cost", cl::desc("Print the cost"),
      cl::init(false));
+
+static cl::opt<bool> MemOnly("souper-mem-only", cl::init(false),
+    cl::desc("With -souper-mem-opt, skip expression candidates and report "
+             "only memory regions (default=false)"));
+
+static cl::opt<std::string> MemEmitIR("souper-mem-emit-ir", cl::init(""),
+    cl::value_desc("filename"),
+    cl::desc("With -souper-mem-opt, apply the memory replacements and write "
+             "the rewritten IR here (default: report only, IR untouched)"));
 
 static ExitOnError ExitOnErr;
 
@@ -109,17 +121,47 @@ int main(int argc, char **argv) {
   KVStore *KV = 0;
   std::unique_ptr<Solver> S = GetSolver(KV);
 
+  const MemoryOptFlags MemFlags = getMemoryOptFlags();
+  if (!MemFlags.Enabled && (MemOnly || !MemEmitIR.empty())) {
+    llvm::errs() << "-souper-mem-only and -souper-mem-emit-ir need "
+                    "-souper-mem-opt\n";
+    return 1;
+  }
+  if (Check && MemFlags.Enabled) {
+    llvm::errs() << "-check does not support -souper-mem-opt\n";
+    return 1;
+  }
+
   InstContext IC;
   ExprBuilderContext EBC;
   CandidateMap CandMap;
-  AddModuleToCandidateMap(IC, EBC, CandMap, *M.get());
+  bool OK = true;
 
-  if (Check) {
-    return CheckCandidateMap(*M.get(), CandMap, S.get(), IC) ? 0 : 1;
-  } else {
+  // Expression candidates: the original flow.
+  if (!(MemFlags.Enabled && MemOnly)) {
+    AddModuleToCandidateMap(IC, EBC, CandMap, *M.get());
+    if (Check)
+      return CheckCandidateMap(*M.get(), CandMap, S.get(), IC) ? 0 : 1;
     if (StaticProfile && !KV)
       KV = new KVStore;
-    return SolveCandidateMap(llvm::outs(), CandMap, S.get(), IC,
-                             StaticProfile ? KV : 0) ? 0 : 1;
+    OK = SolveCandidateMap(llvm::outs(), CandMap, S.get(), IC,
+                           StaticProfile ? KV : 0);
   }
+
+  if (MemFlags.Enabled) {
+    OK &= SolveMemoryRegions(llvm::outs(), *M.get(), MemFlags,
+                             /*Apply=*/!MemEmitIR.empty());
+    if (OK && !MemEmitIR.empty()) {
+      std::error_code EC;
+      ToolOutputFile Out(MemEmitIR, EC, sys::fs::OF_Text);
+      if (EC) {
+        llvm::errs() << "cannot write " << MemEmitIR << ": " << EC.message()
+                     << "\n";
+        return 1;
+      }
+      M->print(Out.os(), nullptr);
+      Out.keep();
+    }
+  }
+  return OK ? 0 : 1;
 }

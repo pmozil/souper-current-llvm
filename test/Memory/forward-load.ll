@@ -6,5 +6,5 @@ define i32 @f(ptr align 4 dereferenceable(4) %p, i32 %v) {
   %y = mul i32 %x, 3
   ret i32 %y
 }
-; CHECK-NOT: load
+; CHECK-NOT: = load
 ; CHECK: mul i32 %v, 3

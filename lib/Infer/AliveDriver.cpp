@@ -403,6 +403,8 @@ synthesizeConstantUsingSolver(tools::Transform &t,
 
 unsigned souper::AliveMemNameSalt = 0;
 bool souper::AliveLastTimedOut = false;
+unsigned souper::AliveMemAttempts = 3;
+unsigned souper::AliveMemRetries = 0;
 
 souper::AliveDriver::AliveDriver(Inst *LHS_, Inst *PreCondition_, InstContext &IC_,
                                  std::vector<Inst *> ExtraInputs)
@@ -676,7 +678,7 @@ bool souper::AliveDriver::translateAndCache(const souper::Inst *I,
 
   if (NamesCache.find(I) != NamesCache.end()) {
     Name = NamesCache[I];
-  } else if (I->Name != "") {
+  } else if (I->Name != "" && !(IsMemRegion && I->K == Inst::Var)) {
     if (I->SynthesisConstID != 0) {
       // No way to avoid string matching without
       // changes in Inst and EnumerativeSynthesis
@@ -1346,10 +1348,11 @@ std::unordered_set<RefinementProblem, RefinementProblem::Hash>
 }
 
 }
-bool souper::isTransformationValid(souper::Inst *LHS, souper::Inst *RHS,
-                                   const std::vector<InstMapping> &PCs,
-                                   const souper::BlockPCs &BPCs,
-                                   InstContext &IC) {
+static bool isTransformationValidOnce(souper::Inst *LHS, souper::Inst *RHS,
+                                      const std::vector<souper::InstMapping> &PCs,
+                                      const souper::BlockPCs &BPCs,
+                                      souper::InstContext &IC) {
+  using namespace souper;
   Inst *Ante = IC.getConst(llvm::APInt(1, true));
   for (auto PC : PCs ) {
     Inst *Eq = IC.getInst(Inst::Eq, 1, {PC.LHS, PC.RHS});
@@ -1406,4 +1409,27 @@ bool souper::isCandidateInfeasible(souper::Inst* RHS, souper::ValueCache& C,
   }
 
   return !Pruner.verify(RHS, RHSAssume);
+}
+
+bool souper::isTransformationValid(souper::Inst *LHS, souper::Inst *RHS,
+                                   const std::vector<InstMapping> &PCs,
+                                   const souper::BlockPCs &BPCs,
+                                   InstContext &IC) {
+  if (!containsMemory(LHS) && !containsMemory(RHS))
+    return isTransformationValidOnce(LHS, RHS, PCs, BPCs, IC);
+
+  static const unsigned Salts[] = {2, 4, 7, 0, 1, 3, 5, 6};
+  const unsigned Saved = AliveMemNameSalt;
+  const unsigned Attempts = std::max(1u, AliveMemAttempts);
+  bool Valid = false;
+  for (unsigned Try = 0; Try < Attempts; ++Try) {
+    AliveMemNameSalt = Salts[Try % 8];
+    if (Try)
+      ++AliveMemRetries;
+    Valid = isTransformationValidOnce(LHS, RHS, PCs, BPCs, IC);
+    if (Valid || !AliveLastTimedOut)
+      break;
+  }
+  AliveMemNameSalt = Saved;
+  return Valid;
 }
