@@ -841,11 +841,9 @@ void emplace_back_dedup(std::vector<InstMapping> &PCs, Inst *LHS, Inst *RHS) {
 void ExprBuilder::addPC(BasicBlock *BB, BasicBlock *Pred,
                         std::vector<InstMapping> &PCs) {
   if (auto Branch = dyn_cast<CondBrInst>(Pred->getTerminator())) {
-    if (isa<CondBrInst>(Branch)) {
-      emplace_back_dedup(
-          PCs, get(dyn_cast<CondBrInst>(Branch)),
-          IC.getConst(APInt(1, Branch->getSuccessor(0) == BB)));
-    }
+    emplace_back_dedup(
+        PCs, get(Branch->getCondition()),
+        IC.getConst(APInt(1, Branch->getSuccessor(0) == BB)));
   } else if (auto Switch = dyn_cast<SwitchInst>(Pred->getTerminator())) {
     Inst *Cond = get(Switch->getCondition());
     ConstantInt *Case = Switch->findCaseDest(BB);
