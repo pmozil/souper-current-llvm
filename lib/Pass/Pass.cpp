@@ -46,6 +46,7 @@
 #include "souper/Infer/MemorySynthesis.h"
 #include "souper/Tool/GetSolver.h"
 #include "souper/Tool/CandidateMapUtils.h"
+#include <algorithm>
 #include "set"
 #include <optional>
 
@@ -53,6 +54,10 @@
 STATISTIC(InstructionReplaced, "Number of instructions replaced by another instruction");
 STATISTIC(DominanceCheckFailed, "Number of failed replacement due to dominance check");
 STATISTIC(MemRegionsRewritten, "Number of memory regions rewritten");
+STATISTIC(MemRegionsExtracted, "Number of memory regions extracted");
+STATISTIC(MemCrossBlockExtracted, "Number of extracted regions spanning several blocks");
+STATISTIC(MemCrossBlockRewritten, "Number of rewritten regions spanning several blocks");
+STATISTIC(MemPlanCloneRejected, "Number of memory plans rejected by the dry run on a clone");
 
 using namespace souper;
 using namespace llvm;
@@ -252,7 +257,10 @@ public:
       O.Cost = makeTTIMemCostContext(TTI, F.getContext());
     MF.applyTo(O.Cost);
 
-    for (auto &C : X.extract(MF.MaxWindow)) {
+    for (auto &C : X.extract(MF.MaxWindow, MF.MaxBlocks)) {
+      ++MemRegionsExtracted;
+      if (C.isMultiBlock())
+        ++MemCrossBlockExtracted;
       if (DebugLevel > 1) {
         errs() << "\n; memory region in " << F.getName() << " ("
                << C.MemOps.size() << " accesses), cost "
@@ -271,14 +279,47 @@ public:
       Inst *RHS = X.build(C, Plans.front());
       if (!RHS || memBenefit(C.Mapping.LHS, RHS, O.Cost) <= 0)
         continue;
+      // Dry run on a clone first. A timeout,
+      // an unsupported construct or a
+      // plan that does not verify structurally
+      // leaves the original untouched.
+      if (!validateMemoryPlanOnClone(C, Plans.front())) {
+        ++MemPlanCloneRejected;
+        continue;
+      }
       if (!applyMemoryPlan(C, Plans.front()))
         continue;
       ++MemRegionsRewritten;
+      if (C.isMultiBlock())
+        ++MemCrossBlockRewritten;
       if (DebugLevel > 1)
         errs() << "; memory region rewritten\n";
       return true;
     }
     return false;
+  }
+
+  // Applies up to MaxIterations rewrites.
+  // Every rewrite changes the IR, so all
+  // analyses and the InstContext
+  // (whose nodes remember erased instructions)
+  // are recomputed before looking for the next one.
+  bool runMemoryOptRepeatedly(Function &F, FunctionAnalysisManager &FAM,
+                              const MemoryOptFlags &MF) {
+    bool Changed = false;
+    for (unsigned It = 0; It < std::max(1u, MF.MaxIterations); ++It) {
+      auto &LI = FAM.getResult<llvm::LoopAnalysis>(F);
+      auto &DB = FAM.getResult<DemandedBitsAnalysis>(F);
+      auto &LVI = FAM.getResult<LazyValueAnalysis>(F);
+      auto &SE = FAM.getResult<ScalarEvolutionAnalysis>(F);
+      auto &TLI = FAM.getResult<TargetLibraryAnalysis>(F);
+      InstContext MemIC;
+      if (!runMemoryOpt(F, FAM, MF, LI, DB, LVI, SE, TLI, MemIC))
+        break;
+      FAM.invalidate(F, PreservedAnalyses::none());   // instruction order changed
+      Changed = true;
+    }
+    return Changed;
   }
 
   bool runOnFunction(Function &F, FunctionAnalysisManager &FAM) {
@@ -322,11 +363,8 @@ public:
     }
 
     const MemoryOptFlags MemFlags = getMemoryOptFlags();
-    if (MemFlags.Enabled &&
-        runMemoryOpt(F, FAM, MemFlags, LI, DB, LVI, SE, TLI, IC)) {
-      FAM.invalidate(F, PreservedAnalyses::none());   // instruction order changed
+    if (MemFlags.Enabled && runMemoryOptRepeatedly(F, FAM, MemFlags))
       return true;
-    }
 
     FunctionCandidateSet CS = ExtractCandidatesFromPass(F, LI, DB, LVI, SE, TLI, IC, EBC);
 

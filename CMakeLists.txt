@@ -613,6 +613,7 @@ add_executable(extractor_tests
 add_executable(inst_tests
   unittests/Inst/InstTests.cpp
   unittests/Inst/MemCostTests.cpp
+  unittests/Inst/MemInterpreterTests.cpp
 )
 
 add_executable(parser_tests

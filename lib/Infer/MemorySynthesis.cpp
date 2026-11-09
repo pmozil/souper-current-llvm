@@ -159,6 +159,12 @@ std::error_code souper::synthesizeMemoryReorders(
   MemSynthStats Local;
   MemSynthStats &St = Stats ? *Stats : Local;
 
+  // Byte order comes from the function's
+  // DataLayout (recorded by the extractor).
+  // The interpreter prunes with it and Alive2 verifies with it.
+  const MemEndian Endian = C.Endian;
+  AliveMemLittleEndian = Endian == MemEndian::Little;
+
   Inst *Orig = C.Mapping.LHS;
   MemSchedule OrigSched = linearize(Orig);
   if (!OrigSched.Valid)
@@ -291,7 +297,7 @@ std::error_code souper::synthesizeMemoryReorders(
   for (Plan &Pl : Plans) {
     if (Calls >= O.MaxVerify)
       break;
-    if (!memTrialsAgree(Orig, Pl.RHS, O.PruneTrials, 1, &C.PCs)) {
+    if (!memTrialsAgree(Orig, Pl.RHS, O.PruneTrials, Endian, 1, &C.PCs)) {
       ++St.Pruned;
       continue;
     }

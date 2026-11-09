@@ -110,7 +110,7 @@ bool souper::SolveMemoryRegions(raw_ostream &OS, Module &M,
       Flags.applyTo(O.Cost);
 
       bool Applied = false;
-      auto Regions = X.extract(Flags.MaxWindow);
+      auto Regions = X.extract(Flags.MaxWindow, Flags.MaxBlocks);
       if (Iter == 0)
         R.Regions += Regions.size();
 
@@ -132,7 +132,8 @@ bool souper::SolveMemoryRegions(raw_ostream &OS, Module &M,
         ++R.Replacements;
 
         if (Apply) {
-          if (!applyMemoryPlan(C, Plans.front()))
+          if (!validateMemoryPlanOnClone(C, Plans.front()) ||
+              !applyMemoryPlan(C, Plans.front()))
             continue;
           if (verifyFunction(F, &errs())) {
             errs() << "function " << F.getName()

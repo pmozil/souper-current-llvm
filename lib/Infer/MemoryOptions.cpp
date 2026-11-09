@@ -24,6 +24,15 @@ static cl::opt<bool> MemOpt("souper-mem-opt", cl::init(false),
 static cl::opt<unsigned> MemMaxWindow("souper-mem-max-window", cl::init(12),
     cl::desc("Max loads+stores per memory region (default=12)"));
 
+static cl::opt<unsigned> MemMaxBlocks("souper-mem-max-blocks", cl::init(4),
+    cl::desc("Max basic blocks per memory region; 1 disables cross-block "
+             "regions (default=4)"));
+
+static cl::opt<unsigned> MemMaxIterations("souper-mem-max-iterations",
+    cl::init(1),
+    cl::desc("Rewrites per function before the pass stops; analyses are "
+             "recomputed between rewrites (default=1)"));
+
 static cl::opt<unsigned> MemMaxOrders("souper-mem-max-orders", cl::init(2000),
     cl::desc("Max enumerated orders per move set (default=2000)"));
 
@@ -45,6 +54,8 @@ MemoryOptFlags souper::getMemoryOptFlags() {
   MemoryOptFlags F;
   F.Enabled = MemOpt;
   F.MaxWindow = MemMaxWindow;
+  F.MaxBlocks = MemMaxBlocks;
+  F.MaxIterations = MemMaxIterations;
   F.Synth.MaxOrders = MemMaxOrders;
   F.Synth.PruneTrials = MemPruneTrials;
   F.Synth.MaxVerify = MemMaxVerify;

@@ -33,7 +33,7 @@ uint8_t MemRunResult::read(uint64_t A) const {
 }
 
 bool souper::runMemSchedule(const MemSchedule &S, const MemTrial &T,
-                            MemRunResult &R) {
+                            MemRunResult &R, MemEndian E) {
   R = MemRunResult();
   R.Seed = T.Seed;
   ValueCache Vals;
@@ -59,19 +59,23 @@ bool souper::runMemSchedule(const MemSchedule &S, const MemTrial &T,
     uint64_t Addr = P.getZExtValue();
     unsigned Bits = Op->K == Inst::Load ? Op->Width : Op->Ops[2]->Width;
     unsigned Bytes = (Bits + 7) / 8;
+    // Byte B (counted from the lowest address) lives at bit memByteShift(B)
+    // of the access. Loads and stores share this one mapping.
     if (Op->K == Inst::Load) {
-      llvm::APInt V(Bits, 0);                  // little endian
+      llvm::APInt Wide(Bytes * 8, 0);
       for (unsigned B = 0; B < Bytes; ++B)
-        V |= llvm::APInt(64, R.read(Addr + B)).zextOrTrunc(Bits).shl(8 * B);
-      Vals[Op] = EvalValue(V);
+        Wide |= llvm::APInt(Bytes * 8, R.read(Addr + B))
+                    .shl(memByteShift(B, Bytes, E));
+      Vals[Op] = EvalValue(Wide.zextOrTrunc(Bits));
     } else {
       llvm::APInt Val;
       if (!Eval(Op->Ops[2], Val))
         return false;
-      llvm::APInt Wide = Val.zext(Bytes * 8);
+      llvm::APInt Wide = Val.zextOrTrunc(Bytes * 8);
       for (unsigned B = 0; B < Bytes; ++B)
-        R.Written[Addr + B] =
-            (uint8_t)Wide.lshr(8 * B).trunc(8).getZExtValue();
+        R.Written[Addr + B] = (uint8_t)Wide.lshr(memByteShift(B, Bytes, E))
+                                  .trunc(8)
+                                  .getZExtValue();
     }
   }
   for (Inst *L : S.LiveOuts) {
@@ -144,7 +148,8 @@ static bool pcsHold(const std::vector<InstMapping> &PCs, const MemTrial &T) {
   return true;
 }
 
-bool souper::memTrialsAgree(Inst *L, Inst *R, unsigned N, uint64_t Seed,
+bool souper::memTrialsAgree(Inst *L, Inst *R, unsigned N, MemEndian E,
+                            uint64_t Seed,
                             const std::vector<InstMapping> *PCs) {
   MemSchedule SL = linearize(L), SR = linearize(R);
   if (!SL.Valid || !SR.Valid)
@@ -171,7 +176,7 @@ bool souper::memTrialsAgree(Inst *L, Inst *R, unsigned N, uint64_t Seed,
     if (PCs && !pcsHold(*PCs, T))
       continue;                        // this layout is ruled out by the PCs
     MemRunResult A, B;
-    if (!runMemSchedule(SL, T, A) || !runMemSchedule(SR, T, B))
+    if (!runMemSchedule(SL, T, A, E) || !runMemSchedule(SR, T, B, E))
       continue;
     if (A.LiveOuts != B.LiveOuts)
       return false;

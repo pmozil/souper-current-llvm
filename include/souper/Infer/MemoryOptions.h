@@ -23,6 +23,8 @@ namespace souper {
 struct MemoryOptFlags {
   bool Enabled = false;            // -souper-mem-opt
   unsigned MaxWindow = 12;         // -souper-mem-max-window
+  unsigned MaxBlocks = 4;          // -souper-mem-max-blocks (1 = single block)
+  unsigned MaxIterations = 1;      // -souper-mem-max-iterations
   MemSynthOptions Synth;           // orders, trials, verify budget, retries
   std::optional<unsigned> LoadLatency;   // -souper-mem-load-latency, only if given
 

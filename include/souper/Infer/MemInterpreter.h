@@ -17,6 +17,7 @@
 
 #include "souper/Infer/Interpreter.h"
 #include "souper/Inst/MemSchedule.h"
+#include "llvm/IR/DataLayout.h"
 #include <cstdint>
 #include <map>
 #include <vector>
@@ -37,9 +38,21 @@ struct MemRunResult {
   uint8_t read(uint64_t Addr) const;
 };
 
-/// Runs a linearised region. Returns false if some value was poison/UB or not
+/// Endianness of the target described by a DataLayout.
+inline MemEndian memEndianOf(const llvm::DataLayout &DL) {
+  return DL.isLittleEndian() ? MemEndian::Little : MemEndian::Big;
+}
+
+/// Runs a linearised region.
+/// Returns false if some value was poison/UB or not
 /// evaluable (the trial is then ignored).
-bool runMemSchedule(const MemSchedule &S, const MemTrial &T, MemRunResult &R);
+/// Multi-byte accesses are split into
+/// and assembled from address-indexed
+/// bytes using byte order E. There is
+/// deliberately no default for E:
+/// callers must say which target they model.
+bool runMemSchedule(const MemSchedule &S, const MemTrial &T, MemRunResult &R,
+                    MemEndian E);
 
 /// True if no trial tells LHS and RHS apart (live-outs and final memory).
 /// Only ever used to REJECT a candidate; Alive2 stays the sole authority for
@@ -47,7 +60,7 @@ bool runMemSchedule(const MemSchedule &S, const MemTrial &T, MemRunResult &R);
 /// Conditions the PCs do not state (for example aliasing facts AA used) can still
 /// make it reject a candidate that differs only on inputs those facts forbid. That costs an
 /// optimisation, never soundness.
-bool memTrialsAgree(Inst *LHS, Inst *RHS, unsigned NumTrials,
+bool memTrialsAgree(Inst *LHS, Inst *RHS, unsigned NumTrials, MemEndian E,
                     uint64_t Seed = 1,
                     const std::vector<InstMapping> *PCs = nullptr);
 

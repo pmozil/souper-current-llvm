@@ -89,6 +89,9 @@ bool compareCosts(const BackendCost &C1, const BackendCost &C2);
 /// the plan cannot be applied.
 bool applyMemoryPlan(const MemoryRegionCandidate &C, const MemPlan &P);
 
+bool validateMemoryPlanOnClone(const MemoryRegionCandidate &C,
+                               const MemPlan &P);
+
 } // namespace souper
 
 #endif // SOUPER_CODEGEN_CODEGEN_H

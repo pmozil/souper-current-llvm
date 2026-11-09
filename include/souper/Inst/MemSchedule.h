@@ -20,6 +20,18 @@
 
 namespace souper {
 
+/// Byte order of the target whose memory a region reads and writes.
+/// Always comes from the LLVM DataLayout of the function being optimised
+enum class MemEndian { Little, Big };
+
+/// Position (in bits) at which byte B of an N-byte access,
+/// counted from the lowest address,
+/// sits inside the access's integer value:
+///   little endian: 8 * B        big endian: 8 * (N - 1 - B)
+inline unsigned memByteShift(unsigned B, unsigned N, MemEndian E) {
+  return E == MemEndian::Little ? 8 * B : 8 * (N - 1 - B);
+}
+
 /// A memory region in execution order.
 struct MemSchedule {
   Inst *Root = nullptr;           // the MemResult

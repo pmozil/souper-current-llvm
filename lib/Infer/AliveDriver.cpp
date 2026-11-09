@@ -404,6 +404,7 @@ synthesizeConstantUsingSolver(tools::Transform &t,
 unsigned souper::AliveMemNameSalt = 0;
 bool souper::AliveLastTimedOut = false;
 unsigned souper::AliveMemAttempts = 3;
+bool souper::AliveMemLittleEndian = true;
 unsigned souper::AliveMemRetries = 0;
 
 souper::AliveDriver::AliveDriver(Inst *LHS_, Inst *PreCondition_, InstContext &IC_,
@@ -412,6 +413,9 @@ souper::AliveDriver::AliveDriver(Inst *LHS_, Inst *PreCondition_, InstContext &I
   smt::set_query_timeout(std::to_string(60000)); // milliseconds
   IsLHS = true;
   IsMemRegion = containsMemory(LHS_);
+  if (IsMemRegion && !AliveMemLittleEndian)
+    LHSF = IR::Function(IR::Type::voidTy, std::string(), 64, 64,
+                        /*little_endian=*/false);
   InstNumbers = 101;
   //FIXME: Magic number. 101 is chosen arbitrarily.
   //This should go away once non-input variable names are not discarded
@@ -546,6 +550,9 @@ void souper::AliveDriver::copyInputs(souper::AliveDriver::Cache &To,
 bool souper::AliveDriver::verify (Inst *RHS, Inst *RHSAssumptions) {
   RExprCache.clear();
   IR::Function RHSF;
+  if (IsMemRegion && !AliveMemLittleEndian)
+    RHSF = IR::Function(IR::Type::voidTy, std::string(), 64, 64,
+                        /*little_endian=*/false);
   copyInputs(RExprCache, RHSF);
   if (!translateRoot(RHS, RHSAssumptions, RHSF, RExprCache)) {
     llvm::errs() << "Failed to translate RHS.\n";

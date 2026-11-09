@@ -16,8 +16,9 @@
 // translation unit, because ExprBuilder lives in an anonymous namespace there.
 // It implements MemoryRegionExtractor (declared in Candidates.h).
 //
-// What a "region" is: a run of instructions in one basic
-// block that contains
+// What a "region" is: a run of instructions in
+// one basic block (or in a chain
+// of blocks, see chainSuccessor) that contains
 // no barrier. A barrier is anything that is not a
 // plain, integer, byte-sized
 // load or store but touches memory or may not return (volatile/atomic
@@ -57,6 +58,31 @@ bool isPureValueIntrinsic(const CallBase &CB) {
   default:
     return false;
   }
+}
+
+// The block that unconditionally follows
+// BB and can only be reached from it,
+// or nullptr. Crossing such an edge
+// keeps the region straight-line, e. g. no loop
+// back edges (the successor has no
+// other predecessor and is not the entry),
+// no conditional or exceptional control flow,
+// and no PHIs, which stay hard barriers.
+BasicBlock *chainSuccessor(BasicBlock *BB) {
+  auto *Br = dyn_cast<BranchInst>(BB->getTerminator());
+  if (!Br || isa<CondBrInst>(Br))
+    return nullptr;
+  BasicBlock *S = Br->getSuccessor(0);
+  if (S == BB || S == &BB->getParent()->getEntryBlock() ||
+      S->hasAddressTaken() || S->getSinglePredecessor() != BB ||
+      isa<PHINode>(S->front()))
+    return nullptr;
+  return S;
+}
+
+bool isChainContinuation(BasicBlock &B) {
+  BasicBlock *P = B.getSinglePredecessor();
+  return P && chainSuccessor(P) == &B;
 }
 
 bool isDefaultAddrSpace(const Value *Ptr) {
@@ -153,7 +179,7 @@ struct MemoryRegionExtractor::Impl {
   void computeDeps(MemoryRegionCandidate &C);
   void addAliasPCs(MemoryRegionCandidate &C, ExprBuilderContext &EBC);
   void strengthenPtrFacts(MemoryRegionCandidate &C, ExprBuilderContext &EBC);
-  bool makeCandidate(BasicBlock &BB, const std::vector<Instruction *> &Window,
+  bool makeCandidate(const std::vector<Instruction *> &Window,
                      Instruction *Anchor,
                      std::vector<MemoryRegionCandidate> &Out);
 };
@@ -350,12 +376,37 @@ void MemoryRegionExtractor::Impl::addAliasPCs(MemoryRegionCandidate &C,
 }
 
 bool MemoryRegionExtractor::Impl::makeCandidate(
-    BasicBlock &BB, const std::vector<Instruction *> &Window,
+    const std::vector<Instruction *> &Window,
     Instruction *Anchor, std::vector<MemoryRegionCandidate> &Out) {
+  if (Window.empty())
+    return false;
   MemoryRegionCandidate C;
-  C.BB = &BB;
+  C.BB = Anchor->getParent();
   C.Window = Window;
   C.Anchor = Anchor;
+  C.Endian = DL.isLittleEndian() ? MemEndian::Little : MemEndian::Big;
+
+  // The chain of blocks from the first window instruction to the anchor.
+  C.Blocks.push_back(Window.front()->getParent());
+  while (C.Blocks.back() != C.BB) {
+    BasicBlock *Next = chainSuccessor(C.Blocks.back());
+    if (!Next || std::find(C.Blocks.begin(), C.Blocks.end(), Next) !=
+                     C.Blocks.end())
+      return false;
+    C.Blocks.push_back(Next);
+  }
+  auto BlockIdx = [&](Instruction *I) {
+    auto It = std::find(C.Blocks.begin(), C.Blocks.end(), I->getParent());
+    return (unsigned)(It - C.Blocks.begin());
+  };
+  for (Instruction *I : Window) {
+    unsigned Idx = BlockIdx(I);
+    if (Idx >= C.Blocks.size())
+      return false;
+    C.WindowBlock.push_back(Idx);
+    if (isa<LoadInst>(I) || isa<StoreInst>(I))
+      C.OpBlock.push_back(Idx);
+  }
   unsigned NumStores = 0;
   for (Instruction *I : Window) {
     if (isa<LoadInst>(I)) {
@@ -397,35 +448,58 @@ MemoryRegionExtractor::MemoryRegionExtractor(
 MemoryRegionExtractor::~MemoryRegionExtractor() = default;
 
 std::vector<MemoryRegionCandidate>
-MemoryRegionExtractor::extract(unsigned MaxWindowOps) {
+MemoryRegionExtractor::extract(unsigned MaxWindowOps, unsigned MaxBlocks) {
+  MaxBlocks = std::max(1u, MaxBlocks);
   std::vector<MemoryRegionCandidate> Out;
   // Alive2's pointer width must match what the extractor produced (64).
   if (PImpl->DL.getPointerSizeInBits(0) != 64 || MaxWindowOps < 2)
     return Out;
 
-  for (BasicBlock &BB : PImpl->F) {
+  // Walk each chain of blocks from its head;
+  // blocks that continue a chain are
+  // visited as part of it, never as heads.
+  for (BasicBlock &Head : PImpl->F) {
+    if (MaxBlocks > 1 && isChainContinuation(Head))
+      continue;
     std::vector<Instruction *> Cur;
-    unsigned MemCount = 0;
+    unsigned MemCount = 0, WinBlocks = 0;
     auto Flush = [&](Instruction *Anchor) {
-      PImpl->makeCandidate(BB, Cur, Anchor, Out);
+      PImpl->makeCandidate(Cur, Anchor, Out);
       Cur.clear();
       MemCount = 0;
+      WinBlocks = 0;
     };
-    for (Instruction &I : BB) {
-      if (isa<PHINode>(I))
-        continue;
-      if (I.isDebugOrPseudoInst())
-        continue;
-      if (isRegionBarrier(I)) {
-        Flush(&I);
-        continue;
+    std::set<BasicBlock *> Visited;
+    for (BasicBlock *BB = &Head; BB && Visited.insert(BB).second;) {
+      BasicBlock *Next = MaxBlocks > 1 ? chainSuccessor(BB) : nullptr;
+      for (Instruction &I : *BB) {
+        if (isa<PHINode>(I))
+          continue;
+        if (I.isDebugOrPseudoInst())
+          continue;
+        if (Next && &I == BB->getTerminator()) {
+          // Transparent: the branch is not a barrier.
+          // Stop at the block limit.
+          if (!Cur.empty() && WinBlocks >= MaxBlocks)
+            Flush(&I);
+          continue;
+        }
+        if (isRegionBarrier(I)) {
+          Flush(&I);
+          continue;
+        }
+        bool IsMem = isa<LoadInst>(I) || isa<StoreInst>(I);
+        if (IsMem && MemCount == MaxWindowOps)
+          Flush(&I);
+        if (Cur.empty())
+          WinBlocks = 1;
+        Cur.push_back(&I);
+        if (IsMem)
+          ++MemCount;
       }
-      bool IsMem = isa<LoadInst>(I) || isa<StoreInst>(I);
-      if (IsMem && MemCount == MaxWindowOps)
-        Flush(&I);
-      Cur.push_back(&I);
-      if (IsMem)
-        ++MemCount;
+      if (Next && !Cur.empty())
+        ++WinBlocks;
+      BB = Next;
     }
   }
   return Out;

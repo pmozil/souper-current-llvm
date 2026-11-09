@@ -22,6 +22,7 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Support/raw_ostream.h"
 #include "souper/Inst/Inst.h"
+#include "souper/Inst/MemSchedule.h"
 #include <map>
 #include <memory>
 #include <set>
@@ -123,6 +124,15 @@ struct MemPlan {
 
 struct MemoryRegionCandidate {
   llvm::BasicBlock *BB = nullptr;
+  /// The chain of blocks the region spans, in execution order
+  std::vector<llvm::BasicBlock *> Blocks;
+  /// Window[I] originally lives in Blocks[WindowBlock[I]].
+  std::vector<unsigned> WindowBlock;
+  /// MemOps[I] originally lives in Blocks[OpBlock[I]].
+  std::vector<unsigned> OpBlock;
+  /// Byte order of the target (from the function's DataLayout).
+  MemEndian Endian = MemEndian::Little;
+  bool isMultiBlock() const { return Blocks.size() > 1; }
   std::vector<llvm::Instruction *> Window;
   /// Only the loads and stores of the window, in original order.
   std::vector<llvm::Instruction *> MemOps;
@@ -152,8 +162,9 @@ public:
 
   /// All regions with at least two memory ops
   /// (one of them a store), each at
-  /// most MaxWindowOps long.
-  std::vector<MemoryRegionCandidate> extract(unsigned MaxWindowOps);
+  /// most MaxWindowOps long
+  std::vector<MemoryRegionCandidate> extract(unsigned MaxWindowOps,
+                                             unsigned MaxBlocks = 1);
 
   /// Rebuild the region for a plan. Shares
   /// Var Insts with the candidate's LHS,

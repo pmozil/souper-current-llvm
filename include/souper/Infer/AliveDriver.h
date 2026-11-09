@@ -29,6 +29,10 @@ namespace souper {
 extern unsigned AliveMemNameSalt;
 extern bool AliveLastTimedOut;
 extern unsigned AliveMemAttempts;
+/// Byte order Alive2 uses for memory regions. Alive2 reads it from the source
+/// function, so AliveDriver builds its IR::Functions with this value. Set by
+/// the memory optimiser from the DataLayout of the function being rewritten.
+extern bool AliveMemLittleEndian;
 extern unsigned AliveMemRetries;
 
 // TODO: Rename to AliveBuilder if we implement the ExprBuilder API in future
