@@ -410,9 +410,10 @@ public:
                               bool AllowMultipleRHSs, InstContext &IC) {
     std::error_code EC;
 
-    // Memory regions are searched by synthesizeMemoryReorders,
-    // not by the expression synthesizers; RHSs stays empty.
-    // No expression RHS exists.
+    // Memory regions (MemResult roots) have no expression RHS and the
+    // expression synthesizers cannot build one; RHSs stays empty. Memory is
+    // only reached through the region infrastructure (see MemSchedule.h,
+    // MemInterpreter.h and the Alive2 memory translation).
     if (containsMemory(LHS))
       return EC;
 

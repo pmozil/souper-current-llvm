@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "souper/Inst/Inst.h"
-#include "souper/Inst/MemCost.h"
 
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -21,6 +20,14 @@
 
 #include <queue>
 #include <set>
+
+namespace {
+// Static per-access costs used by souper::cost(). The schedule-level memory
+// cost model (load latency, use stalls, adjacency) was removed together with
+// the enumerative memory-schedule search.
+constexpr int MemLoadCost = 4;
+constexpr int MemStoreCost = 2;
+}
 
 using namespace souper;
 
@@ -1155,9 +1162,9 @@ int Inst::getCost(Inst::Kind K) {
     case MemResult:
       return 0;
     case Load:
-      return MemCostDefaults::LoadBase;
+      return MemLoadCost;
     case Store:
-      return MemCostDefaults::StoreBase;
+      return MemStoreCost;
     case PtrAdd:
     case PtrAddInBounds:
       return 1;

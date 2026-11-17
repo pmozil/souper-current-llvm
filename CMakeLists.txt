@@ -414,8 +414,6 @@ set(SOUPER_INFER_FILES
   include/souper/Infer/EnumerativeSynthesis.h
   lib/Infer/AliveDriver.cpp
   lib/Infer/MemInterpreter.cpp
-  lib/Infer/MemorySynthesis.cpp
-  lib/Infer/MemoryOptions.cpp
   include/souper/Infer/AliveDriver.h
   lib/Infer/Pruning.cpp
   include/souper/Infer/Pruning.h
@@ -438,7 +436,6 @@ add_library(souperInfer STATIC
 set(SOUPER_INST_FILES
   lib/Inst/Inst.cpp
   lib/Inst/MemSchedule.cpp
-  lib/Inst/MemCost.cpp
   include/souper/Inst/Inst.h
   include/souper/Inst/InstGraph.h
 )
@@ -482,8 +479,6 @@ add_library(souperSMTLIB2 STATIC
 
 set(SOUPER_TOOL_FILES
   lib/Tool/CandidateMapUtils.cpp
-  lib/Tool/MemoryCandidateUtils.cpp
-  include/souper/Tool/MemoryCandidateUtils.h
   include/souper/Tool/CandidateMapUtils.h
   include/souper/Tool/GetSolver.h.in
 )
@@ -499,7 +494,6 @@ add_library(souperTool STATIC
 
 set(SOUPER_CODEGEN_FILES
   lib/Codegen/Codegen.cpp
-  lib/Codegen/MemoryCodegen.cpp
   include/souper/Codegen/Codegen.h
 )
 
@@ -612,7 +606,6 @@ add_executable(extractor_tests
 
 add_executable(inst_tests
   unittests/Inst/InstTests.cpp
-  unittests/Inst/MemCostTests.cpp
   unittests/Inst/MemInterpreterTests.cpp
 )
 
@@ -757,16 +750,6 @@ target_link_libraries(
   souperInst
   kleeExpr
   souperCodegen
-)
-
-target_link_libraries(
-  souperTool
-  souperExtractor
-  souperInfer
-  souperInst
-  souperCodegen
-  ${LLVM_LIBS}
-  ${LLVM_LDFLAGS}
 )
 
 target_link_libraries(

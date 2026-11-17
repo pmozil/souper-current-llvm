@@ -17,9 +17,7 @@
 #include "llvm/Analysis/LazyValueInfo.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
-#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ScalarEvolution.h"
-#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/UnreachableBlockElim.h"
 #include "llvm/IR/Constants.h"
@@ -42,22 +40,13 @@
 #include "souper/KVStore/KVStore.h"
 #include "souper/SMTLIB2/Solver.h"
 #include "souper/Codegen/Codegen.h"
-#include "souper/Infer/MemoryOptions.h"
-#include "souper/Infer/MemorySynthesis.h"
 #include "souper/Tool/GetSolver.h"
 #include "souper/Tool/CandidateMapUtils.h"
-#include <algorithm>
 #include "set"
-#include <optional>
 
 #define DEBUG_TYPE "souper"
 STATISTIC(InstructionReplaced, "Number of instructions replaced by another instruction");
 STATISTIC(DominanceCheckFailed, "Number of failed replacement due to dominance check");
-STATISTIC(MemRegionsRewritten, "Number of memory regions rewritten");
-STATISTIC(MemRegionsExtracted, "Number of memory regions extracted");
-STATISTIC(MemCrossBlockExtracted, "Number of extracted regions spanning several blocks");
-STATISTIC(MemCrossBlockRewritten, "Number of rewritten regions spanning several blocks");
-STATISTIC(MemPlanCloneRejected, "Number of memory plans rejected by the dry run on a clone");
 
 using namespace souper;
 using namespace llvm;
@@ -75,9 +64,6 @@ DebugFlagParser("souper-debug-level",
      "The larger the number is, the more fine-grained debug "
      "information will be printed."),
      cl::location(DebugLevel), cl::init(1));
-
-static cl::opt<bool> MemUseTTI("souper-mem-use-tti", cl::init(false),
-    cl::desc("Use TargetTransformInfo for per-access costs (default=false)"));
 
 static cl::opt<bool> Verify("souper-verify", cl::init(false),
     cl::desc("Verify functions before Souper processes them (default=false)"));
@@ -109,43 +95,6 @@ static void eliminateDeadCode(Function &F) {
   FAM.registerPass([&] { return TargetLibraryAnalysis(); });
   FAM.registerPass([&] { return PassInstrumentationAnalysis(); });
   FPM.run(F, FAM);
-}
-
-static MemCostContext makeTTIMemCostContext(TargetTransformInfo &TTI,
-                                            LLVMContext &Ctx) {
-  MemCostContext C;
-  C.OpCostHook = [&TTI](const souper::Inst *I) -> std::optional<int> {
-    if ((I->K != souper::Inst::Load && I->K != souper::Inst::Store) ||
-        I->Origins.empty())
-      return std::nullopt;
-    unsigned Opc, AS;
-    Type *Ty;
-    Align A;
-    if (auto *L = dyn_cast<LoadInst>(I->Origins.front())) {
-      Opc = Instruction::Load;
-      Ty = L->getType();
-      A = L->getAlign();
-      AS = L->getPointerAddressSpace();
-    } else if (auto *S = dyn_cast<StoreInst>(I->Origins.front())) {
-      Opc = Instruction::Store;
-      Ty = S->getValueOperand()->getType();
-      A = S->getAlign();
-      AS = S->getPointerAddressSpace();
-    } else {
-      return std::nullopt;
-    }
-    InstructionCost Cost = TTI.getMemoryOpCost(
-        Opc, Ty, A, AS, TargetTransformInfo::TCK_RecipThroughput);
-    if (!Cost.isValid())
-      return std::nullopt;
-    return (int)Cost.getValue();
-  };
-  InstructionCost Probe = TTI.getMemoryOpCost(
-      Instruction::Load, Type::getInt32Ty(Ctx), Align(4), /*AddressSpace=*/0,
-      TargetTransformInfo::TCK_RecipThroughput);
-  if (Probe.isValid())
-    calibrateMemCost(C, (int)Probe.getValue());
-  return C;
 }
 
 struct SouperPass : PassInfoMixin<SouperPass> {
@@ -241,87 +190,6 @@ public:
         .getValue(I);
   }
 
-  // Finds a memory region with a strictly cheaper,
-  // Alive2-verified schedule and applies it.
-  // Returns true if the IR changed.
-  bool runMemoryOpt(Function &F, FunctionAnalysisManager &FAM,
-                    const MemoryOptFlags &MF,
-                    const LoopInfo &LI, DemandedBits &DB, LazyValueInfo &LVI,
-                    ScalarEvolution &SE, TargetLibraryInfo &TLI,
-                    InstContext &IC) {
-    auto &AA = FAM.getResult<AAManager>(F);
-    auto &TTI = FAM.getResult<TargetIRAnalysis>(F);
-    MemoryRegionExtractor X(F, LI, DB, LVI, SE, TLI, AA, IC);
-    MemSynthOptions O = MF.Synth;
-    if (MemUseTTI)
-      O.Cost = makeTTIMemCostContext(TTI, F.getContext());
-    MF.applyTo(O.Cost);
-
-    for (auto &C : X.extract(MF.MaxWindow, MF.MaxBlocks)) {
-      ++MemRegionsExtracted;
-      if (C.isMultiBlock())
-        ++MemCrossBlockExtracted;
-      if (DebugLevel > 1) {
-        errs() << "\n; memory region in " << F.getName() << " ("
-               << C.MemOps.size() << " accesses), cost "
-               << memCost(C.Mapping.LHS, O.Cost) << "\n";
-      }
-      std::vector<MemPlan> Plans;
-      MemSynthStats St;
-      if (synthesizeMemoryReorders(X, C, IC, O, Plans, &St) || Plans.empty()) {
-        if (DebugLevel > 1)
-          errs() << "; no better schedule (built " << St.PlansBuilt
-                 << ", cheaper " << St.Cheaper << ", pruned " << St.Pruned
-                 << ", verified " << St.Verified << ")\n";
-        continue;
-      }
-      // Termination guard: commit only a strict improvement.
-      Inst *RHS = X.build(C, Plans.front());
-      if (!RHS || memBenefit(C.Mapping.LHS, RHS, O.Cost) <= 0)
-        continue;
-      // Dry run on a clone first. A timeout,
-      // an unsupported construct or a
-      // plan that does not verify structurally
-      // leaves the original untouched.
-      if (!validateMemoryPlanOnClone(C, Plans.front())) {
-        ++MemPlanCloneRejected;
-        continue;
-      }
-      if (!applyMemoryPlan(C, Plans.front()))
-        continue;
-      ++MemRegionsRewritten;
-      if (C.isMultiBlock())
-        ++MemCrossBlockRewritten;
-      if (DebugLevel > 1)
-        errs() << "; memory region rewritten\n";
-      return true;
-    }
-    return false;
-  }
-
-  // Applies up to MaxIterations rewrites.
-  // Every rewrite changes the IR, so all
-  // analyses and the InstContext
-  // (whose nodes remember erased instructions)
-  // are recomputed before looking for the next one.
-  bool runMemoryOptRepeatedly(Function &F, FunctionAnalysisManager &FAM,
-                              const MemoryOptFlags &MF) {
-    bool Changed = false;
-    for (unsigned It = 0; It < std::max(1u, MF.MaxIterations); ++It) {
-      auto &LI = FAM.getResult<llvm::LoopAnalysis>(F);
-      auto &DB = FAM.getResult<DemandedBitsAnalysis>(F);
-      auto &LVI = FAM.getResult<LazyValueAnalysis>(F);
-      auto &SE = FAM.getResult<ScalarEvolutionAnalysis>(F);
-      auto &TLI = FAM.getResult<TargetLibraryAnalysis>(F);
-      InstContext MemIC;
-      if (!runMemoryOpt(F, FAM, MF, LI, DB, LVI, SE, TLI, MemIC))
-        break;
-      FAM.invalidate(F, PreservedAnalyses::none());   // instruction order changed
-      Changed = true;
-    }
-    return Changed;
-  }
-
   bool runOnFunction(Function &F, FunctionAnalysisManager &FAM) {
     std::string FunctionName;
     if (F.hasLocalLinkage()) {
@@ -361,10 +229,6 @@ public:
       FM2.addPass(ADCEPass());
       FM2.run(F, FAM2);
     }
-
-    const MemoryOptFlags MemFlags = getMemoryOptFlags();
-    if (MemFlags.Enabled && runMemoryOptRepeatedly(F, FAM, MemFlags))
-      return true;
 
     FunctionCandidateSet CS = ExtractCandidatesFromPass(F, LI, DB, LVI, SE, TLI, IC, EBC);
 
